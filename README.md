@@ -1,0 +1,201 @@
+# gitdx.nvim
+
+A Neovim plugin focused on developer experience:
+- Live Git change indicators in `signcolumn` while you type
+- Subtle inline highlights for added and changed lines
+- Lightweight deleted-line hints (for example `-2` at end-of-line)
+- Side-by-side diff view:
+  - file at `HEAD` (before changes)
+  - current buffer (after changes)
+  - Removed content highlighted in red, added content in green
+
+## Requirements
+
+- Neovim `>= 0.9` (tested on 0.11.4)
+- Git available in your `PATH`
+
+## Installation
+
+### Manual (`pack/*/start`)
+
+Clone directly to Neovim's `start` package directory:
+
+```bash
+git clone https://github.com/HubertKasperek/gitdx.nvim ~/.config/nvim/pack/plugins/start/gitdx.nvim
+```
+
+Then add this to your Neovim config (init.lua):
+
+```lua
+require("gitdx").setup()
+```
+
+### lazy.nvim
+
+```lua
+{
+  "HubertKasperek/gitdx.nvim",
+  config = function()
+    require("gitdx").setup()
+  end,
+}
+```
+
+### packer.nvim
+
+```lua
+use {
+  "HubertKasperek/gitdx.nvim",
+  config = function()
+    require("gitdx").setup()
+  end,
+}
+```
+
+## Quick Start
+
+After installation, the plugin auto-initializes.
+
+1. Open a file tracked by Git.
+2. Start editing.
+3. You will see these signs in `signcolumn`:
+   - `|` for added
+   - `~` for changed
+   - `_` for deleted
+
+## Commands
+
+- `:GitDxDiff [ref]`
+  - Open side-by-side diff for the current file
+  - Default ref is `HEAD`
+  - Example: `:GitDxDiff HEAD~1`
+- `:GitDxDiffClose`
+  - Close diff mode in the current tab and close the plugin base buffer
+- `:GitDxRefresh`
+  - Force live diff recalculation for current buffer
+- `:GitDxToggle`
+  - Toggle live diff signs on/off
+- `:GitDxEnable`
+  - Enable live diff signs
+- `:GitDxDisable`
+  - Disable live diff signs
+
+## Configuration
+
+Full configuration example:
+
+```lua
+require("gitdx").setup({
+  ref = "HEAD",
+  sign_priority = 10,
+
+  signs = {
+    add = "|",
+    change = "~",
+    delete = "_",
+  },
+
+  live = {
+    enabled = true,
+    debounce_ms = 120,
+    max_file_lines = 20000,
+    line_highlight = true,
+    show_deleted_count = true,
+    update_events = {
+      "TextChanged",
+      "TextChangedI",
+      "InsertLeave",
+      "BufWritePost",
+    },
+  },
+
+  diffview = {
+    open_in_tab = true,
+    keep_focus = "right", -- "left" | "right"
+    winhighlight = table.concat({
+      "DiffAdd:GitDxDiffAdd",
+      "DiffDelete:GitDxDiffDelete",
+      "DiffChange:GitDxDiffChange",
+      "DiffText:GitDxDiffText",
+    }, ","),
+  },
+
+  highlights = {
+    GitDxSignAdd = { fg = "#4FB37A", bg = "NONE" },
+    GitDxSignChange = { fg = "#D1AA5A", bg = "NONE" },
+    GitDxSignDelete = { fg = "#D86A6A", bg = "NONE" },
+
+    GitDxLineAdd = { bg = "#102216" },
+    GitDxLineChange = { bg = "#1A2233" },
+    GitDxDeletedVirtual = { fg = "#C67575", italic = true },
+
+    GitDxDiffAdd = { bg = "#14301F" },
+    GitDxDiffDelete = { bg = "#381A1A" },
+    GitDxDiffChange = { bg = "#1C2740" },
+    GitDxDiffText = { bg = "#2E4264", bold = true },
+  },
+})
+```
+
+## Color Customization
+
+Recommended approach:
+
+1. Keep plugin colors in one `palette` table
+2. Pass them through `setup({ highlights = ... })`
+3. Optionally re-apply custom highlight overrides after `ColorScheme`
+
+Example:
+
+```lua
+local palette = {
+  green = "#4FB37A",
+  red = "#E06C75",
+  yellow = "#D1AA5A",
+  add_bg = "#11291A",
+  del_bg = "#3A1C1C",
+  change_bg = "#1E2942",
+}
+
+require("gitdx").setup({
+  highlights = {
+    GitDxSignAdd = { fg = palette.green },
+    GitDxSignChange = { fg = palette.yellow },
+    GitDxSignDelete = { fg = palette.red },
+    GitDxDiffAdd = { bg = palette.add_bg },
+    GitDxDiffDelete = { bg = palette.del_bg },
+    GitDxDiffChange = { bg = palette.change_bg },
+  },
+})
+```
+
+## Recommended Keymaps
+
+```lua
+vim.keymap.set("n", "<leader>gd", "<cmd>GitDxDiff<cr>", { desc = "GitDx: Diff split" })
+vim.keymap.set("n", "<leader>gD", "<cmd>GitDxDiffClose<cr>", { desc = "GitDx: Close diff" })
+vim.keymap.set("n", "<leader>gr", "<cmd>GitDxRefresh<cr>", { desc = "GitDx: Refresh" })
+vim.keymap.set("n", "<leader>gt", "<cmd>GitDxToggle<cr>", { desc = "GitDx: Toggle" })
+```
+
+## Suggested Workflow
+
+1. Keep live diff enabled for constant feedback
+2. Run `:GitDxDiff` before committing
+3. Review both sides quickly
+4. Close with `:GitDxDiffClose`
+5. Commit after visual verification
+
+## Troubleshooting
+
+- No signs visible:
+  - Ensure file is inside a Git repository
+  - Ensure `signcolumn` is enabled (`set signcolumn=yes`)
+  - Run `:GitDxRefresh`
+- `:GitDxDiff` does not open:
+  - File must exist on disk
+  - Git must be available in `PATH`
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for full text.
