@@ -97,14 +97,15 @@ local function apply_window_decoration(win, bufnr)
   local live_opts = config.get().live
   local buf_state = state.buffers[bufnr]
   local has_attached = state.enabled and buf_state ~= nil
+  local has_git_context = has_attached and buf_state.git_in_repo == true
 
-  if not has_attached then
+  if not has_git_context then
     restore_window_option(win, "signcolumn")
     restore_window_option(win, "winbar")
     return
   end
 
-  if live_opts.stable_signcolumn then
+  if live_opts.stable_signcolumn and live_opts.show_signs then
     local win_state = ensure_window_state(win)
     if win_state.signcolumn == nil then
       win_state.signcolumn = vim.wo[win].signcolumn
@@ -162,6 +163,7 @@ local function refresh_now(bufnr, force)
     signs.clear(bufnr)
     if item then
       item.stats = { added = 0, changed = 0, deleted = 0 }
+      item.git_in_repo = false
       sync_windows_for_buffer(bufnr)
     end
     return
@@ -181,6 +183,7 @@ local function refresh_now(bufnr, force)
     signs.clear(bufnr)
     if item then
       item.stats = { added = 0, changed = 0, deleted = 0 }
+      item.git_in_repo = false
       sync_windows_for_buffer(bufnr)
     end
     return
@@ -192,6 +195,7 @@ local function refresh_now(bufnr, force)
 
   if item then
     item.stats = build_stats(hunks)
+    item.git_in_repo = true
     sync_windows_for_buffer(bufnr)
   end
 end
@@ -242,6 +246,7 @@ function M.attach(bufnr)
     stop_debounce = stop_debounce,
     last_tick = nil,
     stats = { added = 0, changed = 0, deleted = 0 },
+    git_in_repo = false,
   }
 
   state.buffers[bufnr] = item
@@ -363,6 +368,41 @@ end
 
 function M.is_enabled()
   return state.enabled
+end
+
+function M.set_signs_visible(enabled)
+  local opts = config.get()
+  opts.live.show_signs = enabled and true or false
+
+  if state.enabled then
+    M.refresh_all(true)
+    sync_all_windows()
+  end
+
+  return opts.live.show_signs
+end
+
+function M.toggle_signs_visible()
+  return M.set_signs_visible(not config.get().live.show_signs)
+end
+
+function M.are_signs_visible()
+  return config.get().live.show_signs
+end
+
+function M.set_winbar_summary(enabled)
+  local opts = config.get()
+  opts.live.winbar_summary = enabled and true or false
+  sync_all_windows()
+  return opts.live.winbar_summary
+end
+
+function M.toggle_winbar_summary()
+  return M.set_winbar_summary(not config.get().live.winbar_summary)
+end
+
+function M.is_winbar_summary_enabled()
+  return config.get().live.winbar_summary
 end
 
 return M

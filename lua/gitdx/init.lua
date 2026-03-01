@@ -57,9 +57,71 @@ local function register_commands()
 
   vim.api.nvim_create_user_command("GitDxPanelClose", function()
     ensure_setup()
+    if not panel.is_open() then
+      util.notify("GitDx panel is not open", vim.log.levels.WARN)
+      return
+    end
+
     panel.close()
+    util.notify("GitDx panel closed")
   end, {
     desc = "Close GitDx changes panel",
+  })
+
+  vim.api.nvim_create_user_command("GitDxWinbarToggle", function()
+    ensure_setup()
+    local enabled = live.toggle_winbar_summary()
+    if enabled then
+      util.notify("GitDx winbar summary is now visible")
+    else
+      util.notify("GitDx winbar summary is now hidden")
+    end
+  end, {
+    desc = "Toggle GitDx winbar summary",
+  })
+
+  vim.api.nvim_create_user_command("GitDxWinbarEnable", function()
+    ensure_setup()
+    live.set_winbar_summary(true)
+    util.notify("GitDx winbar summary is now visible")
+  end, {
+    desc = "Show GitDx winbar summary",
+  })
+
+  vim.api.nvim_create_user_command("GitDxWinbarDisable", function()
+    ensure_setup()
+    live.set_winbar_summary(false)
+    util.notify("GitDx winbar summary is now hidden")
+  end, {
+    desc = "Hide GitDx winbar summary",
+  })
+
+  vim.api.nvim_create_user_command("GitDxSignsToggle", function()
+    ensure_setup()
+    local enabled = live.toggle_signs_visible()
+    if enabled then
+      util.notify("GitDx signs are now visible")
+    else
+      util.notify("GitDx signs are now hidden")
+    end
+  end, {
+    desc = "Toggle GitDx signcolumn indicators",
+  })
+
+  vim.api.nvim_create_user_command("GitDxSignsEnable", function()
+    ensure_setup()
+    live.set_signs_visible(true)
+    util.notify("GitDx signs are now visible")
+  end, {
+    desc = "Show GitDx signcolumn indicators",
+  })
+
+  vim.api.nvim_create_user_command("GitDxSignsDisable", function()
+    ensure_setup()
+    live.set_signs_visible(false)
+    util.notify("GitDx signs are now hidden")
+  end, {
+    desc = "Hide GitDx signcolumn indicators",
   })
 
   vim.api.nvim_create_user_command("GitDxToggle", function()
@@ -123,6 +185,16 @@ end
 function M.toggle()
   ensure_setup()
   return live.toggle()
+end
+
+function M.toggle_signs()
+  ensure_setup()
+  return live.toggle_signs_visible()
+end
+
+function M.toggle_winbar()
+  ensure_setup()
+  return live.toggle_winbar_summary()
 end
 
 function M.open_panel()

@@ -12,6 +12,7 @@ local defaults = {
     enabled = true,
     debounce_ms = 120,
     max_file_lines = 20000,
+    show_signs = true,
     line_highlight = false,
     show_deleted_count = true,
     stable_signcolumn = true,
@@ -83,6 +84,14 @@ local function validate(user_opts)
     if type(user_opts.live.stable_signcolumn_value) ~= "string" then
       error("gitdx.nvim: live.stable_signcolumn_value must be a string")
     end
+  end
+
+  if user_opts.live and user_opts.live.show_signs ~= nil and type(user_opts.live.show_signs) ~= "boolean" then
+    error("gitdx.nvim: live.show_signs must be a boolean")
+  end
+
+  if user_opts.live and user_opts.live.winbar_summary ~= nil and type(user_opts.live.winbar_summary) ~= "boolean" then
+    error("gitdx.nvim: live.winbar_summary must be a boolean")
   end
 
   if user_opts.panel and user_opts.panel.width ~= nil and type(user_opts.panel.width) ~= "number" then

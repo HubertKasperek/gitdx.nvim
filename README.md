@@ -64,6 +64,7 @@ After installation, the plugin auto-initializes.
    - `|` for added
    - `~` for changed
    - `_` for deleted
+4. Indicators and GitDx winbar summary are shown only for files inside a Git repository.
 
 ## Commands
 
@@ -75,13 +76,25 @@ After installation, the plugin auto-initializes.
   - Open/focus the GitDx changes panel
   - Panel keys: `Enter` (open diff), `r` (refresh), `q` (close)
 - `:GitDxPanelClose`
-  - Close GitDx changes panel
+  - Close GitDx changes panel (shows warning if panel is not open)
 - `:GitDxDiffClose`
   - Close diff mode in the current tab and close the plugin base buffer
 - `:GitDxRefresh`
   - Force live diff recalculation for current buffer
 - `:GitDxToggle`
   - Toggle live diff signs on/off
+- `:GitDxSignsToggle`
+  - Toggle left signcolumn indicators only
+- `:GitDxSignsEnable`
+  - Show left signcolumn indicators
+- `:GitDxSignsDisable`
+  - Hide left signcolumn indicators
+- `:GitDxWinbarToggle`
+  - Toggle top winbar summary (`GitDx +A ~M -D`)
+- `:GitDxWinbarEnable`
+  - Show top winbar summary
+- `:GitDxWinbarDisable`
+  - Hide top winbar summary
 - `:GitDxEnable`
   - Enable live diff signs
 - `:GitDxDisable`
@@ -106,6 +119,7 @@ require("gitdx").setup({
     enabled = true,
     debounce_ms = 120,
     max_file_lines = 20000,
+    show_signs = true,
     line_highlight = false,
     show_deleted_count = true,
     stable_signcolumn = true,

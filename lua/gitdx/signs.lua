@@ -11,6 +11,10 @@ local sign_names = {
 }
 
 local function place_sign(kind, bufnr, lnum)
+  if not config.get().live.show_signs then
+    return
+  end
+
   local sign_name = sign_names[kind]
   if not sign_name then
     return
