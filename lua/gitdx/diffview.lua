@@ -4,6 +4,19 @@ local util = require("gitdx.util")
 
 local M = {}
 
+local function get_tab_var(tabpage, name)
+  local ok, value = pcall(vim.api.nvim_tabpage_get_var, tabpage, name)
+  if not ok then
+    return nil
+  end
+
+  return value
+end
+
+local function set_tab_var(tabpage, name, value)
+  pcall(vim.api.nvim_tabpage_set_var, tabpage, name, value)
+end
+
 local function source_file_display_name(path)
   return vim.fn.fnamemodify(path, ":~:.")
 end
@@ -132,15 +145,22 @@ function M.open(opts)
     return
   end
 
+  local opened_diff_tab = false
   if config.get().diffview.open_in_tab then
     vim.cmd("tabnew")
+    opened_diff_tab = true
   end
+
+  local current_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_var(current_tab, "gitdx_diff_owned_tab", opened_diff_tab)
 
   local left_win = vim.api.nvim_get_current_win()
   local left_buf = create_left_buffer(source_buf, base.lines, ref)
   vim.api.nvim_win_set_buf(left_win, left_buf)
 
-  vim.cmd("vsplit")
+  -- Keep semantic layout stable: base on the left, working tree on the right,
+  -- regardless of user 'splitright' setting.
+  vim.cmd("rightbelow vsplit")
 
   local right_win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(right_win, source_buf)
@@ -159,6 +179,21 @@ function M.open(opts)
 end
 
 function M.close()
+  local current_tab = vim.api.nvim_get_current_tabpage()
+  local owns_tab = get_tab_var(current_tab, "gitdx_diff_owned_tab") == true
+
+  if owns_tab then
+    local ok, err = pcall(vim.cmd, "tabclose")
+    if ok then
+      return
+    end
+
+    util.notify(
+      "Unable to close GitDx diff tab; closing diff windows instead (" .. tostring(err) .. ")",
+      vim.log.levels.WARN
+    )
+  end
+
   local wins = vim.api.nvim_tabpage_list_wins(0)
   local has_diff = false
 

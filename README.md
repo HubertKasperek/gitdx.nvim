@@ -78,7 +78,8 @@ After installation, the plugin auto-initializes.
 - `:GitDxPanelClose`
   - Close GitDx changes panel (shows warning if panel is not open)
 - `:GitDxDiffClose`
-  - Close diff mode in the current tab and close the plugin base buffer
+  - If diff was opened in a dedicated tab, close that tab
+  - Otherwise close diff mode in the current tab and close the plugin base buffer
 - `:GitDxRefresh`
   - Force live diff recalculation for current buffer
 - `:GitDxToggle`
