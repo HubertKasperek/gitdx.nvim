@@ -9,7 +9,8 @@ A Neovim plugin focused on developer experience:
 - Side-by-side diff view:
   - file at `HEAD` (before changes)
   - current buffer (after changes)
-  - Removed content highlighted in red, added content in green
+  - Added content highlighted in green, neutral placeholders in gray
+  - GitDx winbar summary is hidden in diff windows to keep both panes aligned
 
 ## Requirements
 
@@ -74,6 +75,7 @@ After installation, the plugin auto-initializes.
   - Example: `:GitDxDiff HEAD~1`
 - `:GitDx`
   - Open/focus the GitDx changes panel
+  - Unavailable while `:GitDxDiff` is active in the current tab (to avoid UI conflicts)
   - Panel keys: `Enter` (open diff), `r` (refresh), `q` (close)
 - `:GitDxPanelClose`
   - Close GitDx changes panel (shows warning if panel is not open)
@@ -142,6 +144,7 @@ require("gitdx").setup({
   diffview = {
     open_in_tab = true,
     keep_focus = "right", -- "left" | "right"
+    sync_scroll = true, -- true = linked scroll in both panes
     winhighlight = table.concat({
       "DiffAdd:GitDxDiffAdd",
       "DiffDelete:GitDxDiffDelete",
@@ -168,7 +171,7 @@ require("gitdx").setup({
     GitDxPanelStatusRename = { fg = "#68A0D8", bold = true },
 
     GitDxDiffAdd = { bg = "#14301F" },
-    GitDxDiffDelete = { bg = "#381A1A" },
+    GitDxDiffDelete = { bg = "#2A2F38" },
     GitDxDiffChange = { bg = "#1C2740" },
     GitDxDiffText = { bg = "#2E4264", bold = true },
   },
@@ -233,6 +236,8 @@ vim.keymap.set("n", "<leader>gt", "<cmd>GitDxToggle<cr>", { desc = "GitDx: Toggl
 - `:GitDxDiff` does not open:
   - File must exist on disk
   - Git must be available in `PATH`
+- `:GitDx` is blocked while diff view is active:
+  - Close diff first with `:GitDxDiffClose`
 
 ## License
 

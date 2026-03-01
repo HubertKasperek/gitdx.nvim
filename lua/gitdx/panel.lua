@@ -265,6 +265,14 @@ function M.refresh()
 end
 
 function M.open()
+  if diffview.is_active() then
+    util.notify(
+      "GitDx panel is unavailable during an active GitDxDiff view. Close diff first with :GitDxDiffClose.",
+      vim.log.levels.WARN
+    )
+    return
+  end
+
   if panel_is_open() then
     M.refresh()
     if vim.api.nvim_win_is_valid(state.winid) then

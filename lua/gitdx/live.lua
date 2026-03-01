@@ -88,6 +88,33 @@ local function build_winbar_label(stats)
   return string.format("%%#GitDxDirtyBadge#GitDx +%d ~%d -%d%%*", stats.added, stats.changed, stats.deleted)
 end
 
+local function strip_gitdx_winbar_label(winbar)
+  if type(winbar) ~= "string" or winbar == "" then
+    return ""
+  end
+
+  local cleaned = winbar
+  local marker = "%#GitDxDirtyBadge#GitDx "
+
+  while true do
+    local from = cleaned:find(marker, 1, true)
+    if not from then
+      break
+    end
+
+    local to = cleaned:find("%*", from, true)
+    if not to then
+      break
+    end
+
+    cleaned = cleaned:sub(1, from - 1) .. cleaned:sub(to + 2)
+  end
+
+  cleaned = cleaned:gsub("^%s*%%=%s*", "")
+  cleaned = cleaned:gsub("%s*%%=%s*$", "")
+  return util.trim(cleaned)
+end
+
 local function apply_window_decoration(win, bufnr)
   if not vim.api.nvim_win_is_valid(win) then
     state.windows[win] = nil
@@ -95,6 +122,7 @@ local function apply_window_decoration(win, bufnr)
   end
 
   local live_opts = config.get().live
+  local in_diff_window = vim.wo[win].diff == true
   local buf_state = state.buffers[bufnr]
   local has_attached = state.enabled and buf_state ~= nil
   local has_git_context = has_attached and buf_state.git_in_repo == true
@@ -115,10 +143,10 @@ local function apply_window_decoration(win, bufnr)
     restore_window_option(win, "signcolumn")
   end
 
-  if live_opts.winbar_summary then
+  if live_opts.winbar_summary and not in_diff_window then
     local win_state = ensure_window_state(win)
     if win_state.winbar == nil then
-      win_state.winbar = vim.wo[win].winbar
+      win_state.winbar = strip_gitdx_winbar_label(vim.wo[win].winbar or "")
     end
 
     local original = win_state.winbar or ""
@@ -129,6 +157,12 @@ local function apply_window_decoration(win, bufnr)
       vim.wo[win].winbar = string.format("%s %%=%s", original, label)
     end
   else
+    if has_git_context and in_diff_window then
+      local win_state = ensure_window_state(win)
+      if win_state.winbar == nil then
+        win_state.winbar = strip_gitdx_winbar_label(vim.wo[win].winbar or "")
+      end
+    end
     restore_window_option(win, "winbar")
   end
 end
@@ -403,6 +437,10 @@ end
 
 function M.is_winbar_summary_enabled()
   return config.get().live.winbar_summary
+end
+
+function M.sync_windows()
+  sync_all_windows()
 end
 
 return M

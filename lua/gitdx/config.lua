@@ -32,6 +32,7 @@ local defaults = {
   diffview = {
     open_in_tab = true,
     keep_focus = "right",
+    sync_scroll = true,
     winhighlight = table.concat({
       "DiffAdd:GitDxDiffAdd",
       "DiffDelete:GitDxDiffDelete",
@@ -55,7 +56,7 @@ local defaults = {
     GitDxPanelStatusDelete = { fg = "#D86A6A", bold = true },
     GitDxPanelStatusRename = { fg = "#68A0D8", bold = true },
     GitDxDiffAdd = { bg = "#14301F" },
-    GitDxDiffDelete = { bg = "#381A1A" },
+    GitDxDiffDelete = { bg = "#2A2F38" },
     GitDxDiffChange = { bg = "#1C2740" },
     GitDxDiffText = { bg = "#2E4264", bold = true },
   },
@@ -109,6 +110,12 @@ local function validate(user_opts)
     local keep_focus = user_opts.diffview.keep_focus
     if keep_focus ~= "left" and keep_focus ~= "right" then
       error("gitdx.nvim: diffview.keep_focus must be 'left' or 'right'")
+    end
+  end
+
+  if user_opts.diffview and user_opts.diffview.sync_scroll ~= nil then
+    if type(user_opts.diffview.sync_scroll) ~= "boolean" then
+      error("gitdx.nvim: diffview.sync_scroll must be a boolean")
     end
   end
 end
