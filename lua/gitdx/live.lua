@@ -9,6 +9,7 @@ local state = {
   enabled = false,
   global_augroup = nil,
   buffers = {},
+  windows = {},
 }
 
 local function resolve_bufnr(bufnr)
@@ -34,15 +35,138 @@ local function is_eligible(bufnr)
   return true
 end
 
-local function refresh_now(bufnr, force)
-  bufnr = resolve_bufnr(bufnr)
+local function ensure_window_state(win)
+  local item = state.windows[win]
+  if item then
+    return item
+  end
 
-  if not is_eligible(bufnr) then
-    signs.clear(bufnr)
+  item = {}
+  state.windows[win] = item
+  return item
+end
+
+local function restore_window_option(win, field)
+  local win_state = state.windows[win]
+  if not win_state or win_state[field] == nil then
     return
   end
 
+  if not vim.api.nvim_win_is_valid(win) then
+    state.windows[win] = nil
+    return
+  end
+
+  vim.wo[win][field] = win_state[field]
+  win_state[field] = nil
+  if win_state.signcolumn == nil and win_state.winbar == nil then
+    state.windows[win] = nil
+  end
+end
+
+local function build_stats(hunks)
+  local stats = {
+    added = 0,
+    changed = 0,
+    deleted = 0,
+  }
+
+  for _, hunk in ipairs(hunks) do
+    if hunk.type == "add" then
+      stats.added = stats.added + hunk.count_new
+    elseif hunk.type == "change" then
+      stats.changed = stats.changed + hunk.count_new
+    elseif hunk.type == "delete" then
+      stats.deleted = stats.deleted + hunk.count_old
+    end
+  end
+
+  return stats
+end
+
+local function build_winbar_label(stats)
+  return string.format("%%#GitDxDirtyBadge#GitDx +%d ~%d -%d%%*", stats.added, stats.changed, stats.deleted)
+end
+
+local function apply_window_decoration(win, bufnr)
+  if not vim.api.nvim_win_is_valid(win) then
+    state.windows[win] = nil
+    return
+  end
+
+  local live_opts = config.get().live
+  local buf_state = state.buffers[bufnr]
+  local has_attached = state.enabled and buf_state ~= nil
+
+  if not has_attached then
+    restore_window_option(win, "signcolumn")
+    restore_window_option(win, "winbar")
+    return
+  end
+
+  if live_opts.stable_signcolumn then
+    local win_state = ensure_window_state(win)
+    if win_state.signcolumn == nil then
+      win_state.signcolumn = vim.wo[win].signcolumn
+    end
+    vim.wo[win].signcolumn = live_opts.stable_signcolumn_value
+  else
+    restore_window_option(win, "signcolumn")
+  end
+
+  if live_opts.winbar_summary then
+    local win_state = ensure_window_state(win)
+    if win_state.winbar == nil then
+      win_state.winbar = vim.wo[win].winbar
+    end
+
+    local original = win_state.winbar or ""
+    local label = build_winbar_label(buf_state.stats or { added = 0, changed = 0, deleted = 0 })
+    if original == "" then
+      vim.wo[win].winbar = label
+    else
+      vim.wo[win].winbar = string.format("%s %%=%s", original, label)
+    end
+  else
+    restore_window_option(win, "winbar")
+  end
+end
+
+local function sync_windows_for_buffer(bufnr)
+  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+    apply_window_decoration(win, bufnr)
+  end
+end
+
+local function sync_all_windows()
+  local seen = {}
+
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local bufnr = vim.api.nvim_win_get_buf(win)
+    apply_window_decoration(win, bufnr)
+    seen[win] = true
+  end
+
+  for win, _ in pairs(state.windows) do
+    if not seen[win] then
+      state.windows[win] = nil
+    end
+  end
+end
+
+local function refresh_now(bufnr, force)
+  bufnr = resolve_bufnr(bufnr)
+
   local item = state.buffers[bufnr]
+  if not is_eligible(bufnr) then
+    signs.clear(bufnr)
+    if item then
+      item.stats = { added = 0, changed = 0, deleted = 0 }
+      sync_windows_for_buffer(bufnr)
+    end
+    return
+  end
+
   if item then
     local changedtick = vim.api.nvim_buf_get_changedtick(bufnr)
     if not force and item.last_tick == changedtick then
@@ -55,12 +179,21 @@ local function refresh_now(bufnr, force)
   local base = git.get_base(path, config.get().ref)
   if not base then
     signs.clear(bufnr)
+    if item then
+      item.stats = { added = 0, changed = 0, deleted = 0 }
+      sync_windows_for_buffer(bufnr)
+    end
     return
   end
 
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   local hunks = git.compute_hunks(base.lines, lines)
   signs.apply(bufnr, hunks)
+
+  if item then
+    item.stats = build_stats(hunks)
+    sync_windows_for_buffer(bufnr)
+  end
 end
 
 local function setup_buffer_autocmds(bufnr, item)
@@ -108,10 +241,12 @@ function M.attach(bufnr)
     debounced_refresh = debounced_refresh,
     stop_debounce = stop_debounce,
     last_tick = nil,
+    stats = { added = 0, changed = 0, deleted = 0 },
   }
 
   state.buffers[bufnr] = item
   setup_buffer_autocmds(bufnr, item)
+  sync_windows_for_buffer(bufnr)
   refresh_now(bufnr, true)
 end
 
@@ -133,6 +268,7 @@ function M.detach(bufnr)
 
   signs.clear(bufnr)
   state.buffers[bufnr] = nil
+  sync_all_windows()
 end
 
 function M.refresh(bufnr, force)
@@ -161,6 +297,13 @@ function M.enable()
     end,
   })
 
+  vim.api.nvim_create_autocmd({ "BufWinEnter", "WinEnter", "WinNew", "TabEnter" }, {
+    group = state.global_augroup,
+    callback = function()
+      sync_all_windows()
+    end,
+  })
+
   vim.api.nvim_create_autocmd({ "FocusGained", "ShellCmdPost", "DirChanged" }, {
     group = state.global_augroup,
     callback = function()
@@ -171,6 +314,8 @@ function M.enable()
   for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
     M.attach(bufnr)
   end
+
+  sync_all_windows()
 end
 
 function M.disable()
@@ -193,6 +338,7 @@ function M.disable()
   end
 
   state.enabled = false
+  sync_all_windows()
 end
 
 function M.reconfigure()
@@ -200,6 +346,8 @@ function M.reconfigure()
   M.disable()
   if should_enable then
     M.enable()
+  else
+    sync_all_windows()
   end
 end
 

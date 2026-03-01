@@ -2,8 +2,10 @@
 
 A Neovim plugin focused on developer experience:
 - Live Git change indicators in `signcolumn` while you type
-- Subtle inline highlights for added and changed lines
+- Optional inline highlights for added and changed lines (off by default)
 - Lightweight deleted-line hints (for example `-2` at end-of-line)
+- Live change summary badge in `winbar` (`+A ~M -D`)
+- Changes panel (`:GitDx`) with changed/added/deleted/renamed files
 - Side-by-side diff view:
   - file at `HEAD` (before changes)
   - current buffer (after changes)
@@ -69,6 +71,11 @@ After installation, the plugin auto-initializes.
   - Open side-by-side diff for the current file
   - Default ref is `HEAD`
   - Example: `:GitDxDiff HEAD~1`
+- `:GitDx`
+  - Open/focus the GitDx changes panel
+  - Panel keys: `Enter` (open diff), `r` (refresh), `q` (close)
+- `:GitDxPanelClose`
+  - Close GitDx changes panel
 - `:GitDxDiffClose`
   - Close diff mode in the current tab and close the plugin base buffer
 - `:GitDxRefresh`
@@ -99,14 +106,22 @@ require("gitdx").setup({
     enabled = true,
     debounce_ms = 120,
     max_file_lines = 20000,
-    line_highlight = true,
+    line_highlight = false,
     show_deleted_count = true,
+    stable_signcolumn = true,
+    stable_signcolumn_value = "yes:1",
+    winbar_summary = true,
     update_events = {
       "TextChanged",
       "TextChangedI",
       "InsertLeave",
       "BufWritePost",
     },
+  },
+
+  panel = {
+    width = 40,
+    split = "left", -- "left" | "right"
   },
 
   diffview = {
@@ -128,6 +143,14 @@ require("gitdx").setup({
     GitDxLineAdd = { bg = "#102216" },
     GitDxLineChange = { bg = "#1A2233" },
     GitDxDeletedVirtual = { fg = "#C67575", italic = true },
+    GitDxDirtyBadge = { fg = "#8FA7BF", bold = true },
+    GitDxPanelTitle = { fg = "#8FA7BF", bold = true },
+    GitDxPanelHint = { fg = "#6E7A89", italic = true },
+    GitDxPanelPath = { fg = "#C7CED8" },
+    GitDxPanelStatusAdd = { fg = "#4FB37A", bold = true },
+    GitDxPanelStatusChange = { fg = "#D1AA5A", bold = true },
+    GitDxPanelStatusDelete = { fg = "#D86A6A", bold = true },
+    GitDxPanelStatusRename = { fg = "#68A0D8", bold = true },
 
     GitDxDiffAdd = { bg = "#14301F" },
     GitDxDiffDelete = { bg = "#381A1A" },
@@ -174,6 +197,7 @@ require("gitdx").setup({
 ```lua
 vim.keymap.set("n", "<leader>gd", "<cmd>GitDxDiff<cr>", { desc = "GitDx: Diff split" })
 vim.keymap.set("n", "<leader>gD", "<cmd>GitDxDiffClose<cr>", { desc = "GitDx: Close diff" })
+vim.keymap.set("n", "<leader>gs", "<cmd>GitDx<cr>", { desc = "GitDx: Source control panel" })
 vim.keymap.set("n", "<leader>gr", "<cmd>GitDxRefresh<cr>", { desc = "GitDx: Refresh" })
 vim.keymap.set("n", "<leader>gt", "<cmd>GitDxToggle<cr>", { desc = "GitDx: Toggle" })
 ```
@@ -190,7 +214,6 @@ vim.keymap.set("n", "<leader>gt", "<cmd>GitDxToggle<cr>", { desc = "GitDx: Toggl
 
 - No signs visible:
   - Ensure file is inside a Git repository
-  - Ensure `signcolumn` is enabled (`set signcolumn=yes`)
   - Run `:GitDxRefresh`
 - `:GitDxDiff` does not open:
   - File must exist on disk

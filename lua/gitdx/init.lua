@@ -2,6 +2,7 @@ local config = require("gitdx.config")
 local diffview = require("gitdx.diffview")
 local highlights = require("gitdx.highlights")
 local live = require("gitdx.live")
+local panel = require("gitdx.panel")
 local signs = require("gitdx.signs")
 local util = require("gitdx.util")
 
@@ -40,8 +41,25 @@ local function register_commands()
   vim.api.nvim_create_user_command("GitDxRefresh", function()
     ensure_setup()
     live.refresh(0, true)
+    if panel.is_open() then
+      panel.refresh()
+    end
   end, {
     desc = "Refresh live Git diff signs for current buffer",
+  })
+
+  vim.api.nvim_create_user_command("GitDx", function()
+    ensure_setup()
+    panel.open()
+  end, {
+    desc = "Open GitDx changes panel",
+  })
+
+  vim.api.nvim_create_user_command("GitDxPanelClose", function()
+    ensure_setup()
+    panel.close()
+  end, {
+    desc = "Close GitDx changes panel",
   })
 
   vim.api.nvim_create_user_command("GitDxToggle", function()
@@ -105,6 +123,11 @@ end
 function M.toggle()
   ensure_setup()
   return live.toggle()
+end
+
+function M.open_panel()
+  ensure_setup()
+  panel.open()
 end
 
 function M.is_setup()

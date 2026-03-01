@@ -23,6 +23,12 @@ local function abs_path(path)
   return vim.fn.fnamemodify(path, ":p")
 end
 
+local function is_directory(path)
+  local uv = vim.uv or vim.loop
+  local stat = uv.fs_stat(path)
+  return stat and stat.type == "directory"
+end
+
 local function relpath(root, path)
   if vim.fs and vim.fs.relpath then
     local ok, relative = pcall(vim.fs.relpath, root, path)
@@ -43,9 +49,13 @@ local function relpath(root, path)
   return path
 end
 
-function M.find_repo_root(path)
-  local file_path = abs_path(path)
-  local dir = vim.fs.dirname(file_path)
+function M.find_repo_root_from(path)
+  local start_path = abs_path(path or vim.fn.getcwd())
+  local dir = start_path
+  if not is_directory(start_path) then
+    dir = vim.fs.dirname(start_path)
+  end
+
   local code, stdout = run_command({ "git", "-C", dir, "rev-parse", "--show-toplevel" })
   if code ~= 0 then
     return nil
@@ -57,6 +67,10 @@ function M.find_repo_root(path)
   end
 
   return root
+end
+
+function M.find_repo_root(path)
+  return M.find_repo_root_from(path)
 end
 
 function M.is_tracked(repo_root, relative_path)
@@ -75,7 +89,9 @@ function M.read_file_at_ref(repo_root, relative_path, ref)
   return util.split_lines(stdout)
 end
 
-function M.get_base(path, ref)
+function M.get_base(path, ref, opts)
+  opts = opts or {}
+
   local root = M.find_repo_root(path)
   if not root then
     return nil, "File is outside a Git repository"
@@ -86,7 +102,7 @@ function M.get_base(path, ref)
 
   local lines = {}
   local tracked = M.is_tracked(root, relative_path)
-  if tracked then
+  if tracked or opts.force_ref_read then
     lines = M.read_file_at_ref(root, relative_path, ref)
   end
 
@@ -96,6 +112,112 @@ function M.get_base(path, ref)
     tracked = tracked,
     lines = lines,
     ref = ref,
+  }
+end
+
+local function split_null_terminated(text)
+  local items = {}
+  local from = 1
+
+  while true do
+    local at = text:find("\0", from, true)
+    if not at then
+      break
+    end
+
+    table.insert(items, text:sub(from, at - 1))
+    from = at + 1
+  end
+
+  if from <= #text then
+    table.insert(items, text:sub(from))
+  end
+
+  return items
+end
+
+local function normalize_status(index_status, worktree_status)
+  if index_status == "?" and worktree_status == "?" then
+    return "A"
+  end
+
+  if index_status == "R" or worktree_status == "R" or index_status == "C" or worktree_status == "C" then
+    return "R"
+  end
+
+  if index_status == "D" or worktree_status == "D" then
+    return "D"
+  end
+
+  if index_status == "A" or worktree_status == "A" then
+    return "A"
+  end
+
+  return "M"
+end
+
+function M.list_changes(start_path)
+  local repo_root = M.find_repo_root_from(start_path or vim.fn.getcwd())
+  if not repo_root then
+    return nil, "Current directory is outside a Git repository"
+  end
+
+  local code, stdout, stderr = run_git(repo_root, {
+    "--no-pager",
+    "status",
+    "--porcelain=1",
+    "--untracked-files=all",
+    "-z",
+  })
+
+  if code ~= 0 then
+    return nil, util.trim(stderr) ~= "" and util.trim(stderr) or "Unable to read Git status"
+  end
+
+  local records = split_null_terminated(stdout)
+  local entries = {}
+  local i = 1
+
+  while i <= #records do
+    local record = records[i]
+    i = i + 1
+
+    if record and record ~= "" then
+      local index_status = record:sub(1, 1)
+      local worktree_status = record:sub(2, 2)
+      local path = record:sub(4)
+      local old_path = nil
+
+      if index_status == "R" or worktree_status == "R" or index_status == "C" or worktree_status == "C" then
+        old_path = records[i] or old_path
+        i = i + 1
+      end
+
+      if path and path ~= "" then
+        local status = normalize_status(index_status, worktree_status)
+        table.insert(entries, {
+          status = status,
+          path = path,
+          old_path = old_path,
+          abs_path = abs_path(repo_root .. "/" .. path),
+          staged = index_status ~= " " and index_status ~= "?",
+          unstaged = worktree_status ~= " " and worktree_status ~= "?",
+        })
+      end
+    end
+  end
+
+  table.sort(entries, function(a, b)
+    if a.path == b.path then
+      return a.status < b.status
+    end
+
+    return a.path < b.path
+  end)
+
+  return {
+    repo_root = repo_root,
+    entries = entries,
   }
 end
 
