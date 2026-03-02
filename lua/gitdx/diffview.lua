@@ -8,6 +8,7 @@ local horizontal_sync_guard = false
 
 local HORIZONTAL_SYNC_SESSION_VAR = "gitdx_diff_sync_session"
 local HORIZONTAL_SYNC_PEER_VAR = "gitdx_diff_peer_win"
+local PREV_WINHIGHLIGHT_VAR = "gitdx_diff_prev_winhighlight"
 
 local function sync_live_window_decorations()
   local ok, live = pcall(require, "gitdx.live")
@@ -46,6 +47,20 @@ end
 
 local function del_win_var(win, name)
   pcall(vim.api.nvim_win_del_var, win, name)
+end
+
+local function restore_winhighlight(win)
+  if not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  local prev = get_win_var(win, PREV_WINHIGHLIGHT_VAR)
+  if prev == nil then
+    return
+  end
+
+  vim.wo[win].winhighlight = prev
+  del_win_var(win, PREV_WINHIGHLIGHT_VAR)
 end
 
 local function get_window_leftcol(win)
@@ -278,6 +293,10 @@ end
 local function apply_diff_window_style(win)
   local win_cfg = config.get().diffview
   local sync_scroll = win_cfg.sync_scroll ~= false
+  if get_win_var(win, PREV_WINHIGHLIGHT_VAR) == nil then
+    set_win_var(win, PREV_WINHIGHLIGHT_VAR, vim.wo[win].winhighlight or "")
+  end
+
   vim.wo[win].diff = true
   vim.wo[win].scrollbind = sync_scroll
   vim.wo[win].cursorbind = sync_scroll
@@ -390,6 +409,9 @@ function M.close()
   end
 
   vim.cmd("diffoff!")
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    restore_winhighlight(win)
+  end
 
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
     local buf = vim.api.nvim_win_get_buf(win)

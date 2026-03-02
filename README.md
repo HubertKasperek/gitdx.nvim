@@ -76,12 +76,19 @@ After installation, the plugin auto-initializes.
 - `:GitDx`
   - Open/focus the GitDx changes panel
   - Unavailable while `:GitDxDiff` is active in the current tab (to avoid UI conflicts)
-  - Panel keys: `Enter` (open diff), `r` (refresh), `q` (close)
+  - Panel actions: `Enter` or mouse click (open diff), `r` (refresh), `q` (close)
+- `:GitDxEx`
+  - Open/focus the GitDx changes panel in the current window (like `:Ex` or `:Explore`)
+  - Keeps `:GitDx` split-panel behavior unchanged
 - `:GitDxPanelClose`
   - Close GitDx changes panel (shows warning if panel is not open)
 - `:GitDxDiffClose`
   - If diff was opened in a dedicated tab, close that tab
   - Otherwise close diff mode in the current tab and close the plugin base buffer
+- `:GitDxStats`
+  - Show added/changed/deleted line counts for the current buffer (`GitDx +A ~M -D`)
+- `:GitDxRanges`
+  - Show changed line ranges (add/change/delete hunks) for the current buffer
 - `:GitDxRefresh`
   - Force live diff recalculation for current buffer
 - `:GitDxToggle`
@@ -216,6 +223,7 @@ require("gitdx").setup({
 vim.keymap.set("n", "<leader>gd", "<cmd>GitDxDiff<cr>", { desc = "GitDx: Diff split" })
 vim.keymap.set("n", "<leader>gD", "<cmd>GitDxDiffClose<cr>", { desc = "GitDx: Close diff" })
 vim.keymap.set("n", "<leader>gs", "<cmd>GitDx<cr>", { desc = "GitDx: Source control panel" })
+vim.keymap.set("n", "<leader>gS", "<cmd>GitDxEx<cr>", { desc = "GitDx: Source control panel (current window)" })
 vim.keymap.set("n", "<leader>gr", "<cmd>GitDxRefresh<cr>", { desc = "GitDx: Refresh" })
 vim.keymap.set("n", "<leader>gt", "<cmd>GitDxToggle<cr>", { desc = "GitDx: Toggle" })
 ```

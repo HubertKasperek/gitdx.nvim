@@ -17,6 +17,39 @@ local function ensure_setup()
   end
 end
 
+local function format_range(start_line, count)
+  if type(start_line) ~= "number" or type(count) ~= "number" or count <= 0 then
+    return "-"
+  end
+
+  local finish = start_line + count - 1
+  if finish <= start_line then
+    return tostring(start_line)
+  end
+
+  return string.format("%d-%d", start_line, finish)
+end
+
+local function format_hunk_line(hunk)
+  local old_range = format_range(hunk.start_old, hunk.count_old)
+  local new_range = format_range(hunk.start_new, hunk.count_new)
+
+  if hunk.type == "add" then
+    return string.format("add      new:%s", new_range)
+  end
+
+  if hunk.type == "change" then
+    return string.format("change   old:%s -> new:%s", old_range, new_range)
+  end
+
+  local anchor = math.max(1, tonumber(hunk.start_new) or 1)
+  return string.format("delete   old:%s (near new line %d)", old_range, anchor)
+end
+
+local function notify_stats(stats)
+  util.notify(string.format("GitDx +%d ~%d -%d", stats.added, stats.changed, stats.deleted))
+end
+
 local function register_commands()
   if commands_registered then
     return
@@ -53,6 +86,58 @@ local function register_commands()
     panel.open()
   end, {
     desc = "Open GitDx changes panel",
+  })
+
+  vim.api.nvim_create_user_command("GitDxEx", function()
+    ensure_setup()
+    panel.open_in_current_window()
+  end, {
+    desc = "Open GitDx changes panel in current window (like :Ex)",
+  })
+
+  vim.api.nvim_create_user_command("GitDxStats", function()
+    ensure_setup()
+    local stats, err = live.get_stats(0)
+    if not stats then
+      util.notify(err or "Unable to compute buffer stats", vim.log.levels.WARN)
+      return
+    end
+
+    notify_stats(stats)
+  end, {
+    desc = "Show added/changed/deleted line counts for current buffer",
+  })
+
+  vim.api.nvim_create_user_command("GitDxRanges", function()
+    ensure_setup()
+    local hunks, stats_or_err, info = live.get_hunks(0)
+    if not hunks then
+      util.notify(stats_or_err or "Unable to compute changed line ranges", vim.log.levels.WARN)
+      return
+    end
+
+    local stats = stats_or_err
+    local lines = {
+      string.format(
+        "GitDx ranges: %s (+%d ~%d -%d)",
+        info.relpath or vim.fn.fnamemodify(info.path, ":~:."),
+        stats.added,
+        stats.changed,
+        stats.deleted
+      ),
+    }
+
+    if #hunks == 0 then
+      table.insert(lines, "working tree clean")
+    else
+      for _, hunk in ipairs(hunks) do
+        table.insert(lines, format_hunk_line(hunk))
+      end
+    end
+
+    vim.api.nvim_echo({ { table.concat(lines, "\n"), "Normal" } }, false, {})
+  end, {
+    desc = "Show changed line ranges for current buffer",
   })
 
   vim.api.nvim_create_user_command("GitDxPanelClose", function()
