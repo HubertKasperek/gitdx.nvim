@@ -11,6 +11,8 @@ local state = {
   winid = nil,
   repo_root = nil,
   line_map = {},
+  open_style = nil,
+  previous_bufnr = nil,
 }
 
 local function panel_is_open()
@@ -25,6 +27,8 @@ local function clear_state()
   state.winid = nil
   state.repo_root = nil
   state.line_map = {}
+  state.open_style = nil
+  state.previous_bufnr = nil
 end
 
 local function status_group(status)
@@ -125,6 +129,10 @@ local function render_entries(entries)
 end
 
 local function panel_path()
+  if panel_is_open() and state.repo_root then
+    return state.repo_root
+  end
+
   local buf = vim.api.nvim_get_current_buf()
   if util.is_regular_buffer(buf) then
     return vim.api.nvim_buf_get_name(buf)
@@ -134,9 +142,33 @@ local function panel_path()
 end
 
 local function close_panel_window()
-  if state.winid and vim.api.nvim_win_is_valid(state.winid) then
-    pcall(vim.api.nvim_win_close, state.winid, true)
+  if not state.winid or not vim.api.nvim_win_is_valid(state.winid) then
+    if state.bufnr and vim.api.nvim_buf_is_valid(state.bufnr) then
+      pcall(vim.api.nvim_buf_delete, state.bufnr, { force = true })
+    end
+    return
   end
+
+  if state.open_style == "current" then
+    local win = state.winid
+    local panel_buf = state.bufnr
+    local previous_buf = state.previous_bufnr
+
+    if previous_buf and vim.api.nvim_buf_is_valid(previous_buf) then
+      pcall(vim.api.nvim_win_set_buf, win, previous_buf)
+    else
+      pcall(vim.api.nvim_win_call, win, function()
+        vim.cmd("enew")
+      end)
+    end
+
+    if panel_buf and vim.api.nvim_buf_is_valid(panel_buf) then
+      pcall(vim.api.nvim_buf_delete, panel_buf, { force = true })
+    end
+    return
+  end
+
+  pcall(vim.api.nvim_win_close, state.winid, true)
 end
 
 function M.close()
@@ -144,22 +176,50 @@ function M.close()
   clear_state()
 end
 
-local function ensure_panel()
+local function open_current_entry_at_mouse()
+  if not panel_is_open() then
+    return
+  end
+
+  local mouse = vim.fn.getmousepos()
+  if not mouse or tonumber(mouse.winid) ~= state.winid then
+    return
+  end
+
+  local line = math.max(1, tonumber(mouse.line) or 1)
+  local col = math.max(0, (tonumber(mouse.column) or 1) - 1)
+
+  pcall(vim.api.nvim_set_current_win, state.winid)
+  pcall(vim.api.nvim_win_set_cursor, state.winid, { line, col })
+  M.open_current_entry()
+end
+
+local function ensure_panel(open_style)
+  open_style = open_style == "current" and "current" or "split"
+
   if panel_is_open() then
     return state.bufnr, state.winid
   end
 
-  local panel_opts = config.get().panel
-  local cmd
-  if panel_opts.split == "right" then
-    cmd = string.format("botright vertical %dnew", panel_opts.width)
+  local win
+  local previous_bufnr = nil
+
+  if open_style == "current" then
+    win = vim.api.nvim_get_current_win()
+    previous_bufnr = vim.api.nvim_win_get_buf(win)
   else
-    cmd = string.format("topleft vertical %dnew", panel_opts.width)
+    local panel_opts = config.get().panel
+    local cmd
+    if panel_opts.split == "right" then
+      cmd = string.format("botright vertical %dnew", panel_opts.width)
+    else
+      cmd = string.format("topleft vertical %dnew", panel_opts.width)
+    end
+
+    vim.cmd(cmd)
+    win = vim.api.nvim_get_current_win()
   end
 
-  vim.cmd(cmd)
-
-  local win = vim.api.nvim_get_current_win()
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_win_set_buf(win, buf)
 
@@ -175,13 +235,23 @@ local function ensure_panel()
   vim.wo[win].foldcolumn = "0"
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
-  vim.wo[win].winfixwidth = true
+  vim.wo[win].winfixwidth = open_style == "split"
 
   vim.keymap.set("n", "q", M.close, { buffer = buf, silent = true, desc = "GitDx panel close" })
   vim.keymap.set("n", "r", M.refresh, { buffer = buf, silent = true, desc = "GitDx panel refresh" })
   vim.keymap.set("n", "<CR>", function()
     M.open_current_entry()
   end, { buffer = buf, silent = true, desc = "GitDx panel open diff" })
+  vim.keymap.set("n", "<LeftMouse>", open_current_entry_at_mouse, {
+    buffer = buf,
+    silent = true,
+    desc = "GitDx panel open diff under mouse",
+  })
+  vim.keymap.set("n", "<2-LeftMouse>", open_current_entry_at_mouse, {
+    buffer = buf,
+    silent = true,
+    desc = "GitDx panel open diff under mouse",
+  })
 
   vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
     buffer = buf,
@@ -192,12 +262,14 @@ local function ensure_panel()
 
   state.bufnr = buf
   state.winid = win
+  state.open_style = open_style
+  state.previous_bufnr = previous_bufnr
 
   return buf, win
 end
 
-local function render(data)
-  local buf, win = ensure_panel()
+local function render(data, open_style)
+  local buf, win = ensure_panel(open_style)
   state.repo_root = data.repo_root
 
   local summary = sum_changes(data.entries)
@@ -205,7 +277,7 @@ local function render(data)
   local header = {
     string.format("GitDx Changes  %s", root_display),
     string.format("A:%d  M:%d  D:%d  R:%d", summary.A, summary.M, summary.D, summary.R),
-    "Enter: diff    r: refresh    q: close",
+    "Enter/Click: diff    r: refresh    q: close",
     "",
   }
 
@@ -254,23 +326,32 @@ local function render(data)
   end
 end
 
-function M.refresh()
+function M.refresh(opts)
+  opts = opts or {}
+  local open_style = opts.open_style or state.open_style or "split"
   local data, err = git.list_changes(panel_path())
   if not data then
     util.notify(err or "Unable to load repository status", vim.log.levels.ERROR)
     return
   end
 
-  render(data)
+  render(data, open_style)
 end
 
-function M.open()
+function M.open(opts)
+  opts = opts or {}
+  local open_style = opts.open_style or "split"
+
   if diffview.is_active() then
     util.notify(
       "GitDx panel is unavailable during an active GitDxDiff view. Close diff first with :GitDxDiffClose.",
       vim.log.levels.WARN
     )
     return
+  end
+
+  if panel_is_open() and state.open_style ~= open_style then
+    M.close()
   end
 
   if panel_is_open() then
@@ -281,7 +362,11 @@ function M.open()
     return
   end
 
-  M.refresh()
+  M.refresh({ open_style = open_style })
+end
+
+function M.open_in_current_window()
+  M.open({ open_style = "current" })
 end
 
 function M.is_open()

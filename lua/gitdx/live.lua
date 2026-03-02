@@ -84,6 +84,31 @@ local function build_stats(hunks)
   return stats
 end
 
+local function collect_buffer_diff(bufnr)
+  if not util.is_regular_buffer(bufnr) then
+    return nil, "Current buffer is not a file on disk"
+  end
+
+  local path = vim.api.nvim_buf_get_name(bufnr)
+  local base, err = git.get_base(path, config.get().ref)
+  if not base then
+    return nil, err
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local hunks = git.compute_hunks(base.lines, lines)
+
+  return {
+    bufnr = bufnr,
+    path = path,
+    repo_root = base.repo_root,
+    relpath = base.relpath,
+    ref = base.ref,
+    hunks = hunks,
+    stats = build_stats(hunks),
+  }
+end
+
 local function build_winbar_label(stats)
   return string.format("%%#GitDxDirtyBadge#GitDx +%d ~%d -%d%%*", stats.added, stats.changed, stats.deleted)
 end
@@ -211,9 +236,8 @@ local function refresh_now(bufnr, force)
     item.last_tick = changedtick
   end
 
-  local path = vim.api.nvim_buf_get_name(bufnr)
-  local base = git.get_base(path, config.get().ref)
-  if not base then
+  local diff_info = collect_buffer_diff(bufnr)
+  if not diff_info then
     signs.clear(bufnr)
     if item then
       item.stats = { added = 0, changed = 0, deleted = 0 }
@@ -223,12 +247,10 @@ local function refresh_now(bufnr, force)
     return
   end
 
-  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
-  local hunks = git.compute_hunks(base.lines, lines)
-  signs.apply(bufnr, hunks)
+  signs.apply(bufnr, diff_info.hunks)
 
   if item then
-    item.stats = build_stats(hunks)
+    item.stats = diff_info.stats
     item.git_in_repo = true
     sync_windows_for_buffer(bufnr)
   end
@@ -441,6 +463,29 @@ end
 
 function M.sync_windows()
   sync_all_windows()
+end
+
+function M.inspect_buffer(bufnr)
+  bufnr = resolve_bufnr(bufnr)
+  return collect_buffer_diff(bufnr)
+end
+
+function M.get_stats(bufnr)
+  local info, err = M.inspect_buffer(bufnr)
+  if not info then
+    return nil, err
+  end
+
+  return vim.deepcopy(info.stats)
+end
+
+function M.get_hunks(bufnr)
+  local info, err = M.inspect_buffer(bufnr)
+  if not info then
+    return nil, err
+  end
+
+  return vim.deepcopy(info.hunks), vim.deepcopy(info.stats), info
 end
 
 return M
