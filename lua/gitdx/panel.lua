@@ -1,4 +1,5 @@
 local config = require("gitdx.config")
+local conflicts = require("gitdx.conflicts")
 local diffview = require("gitdx.diffview")
 local git = require("gitdx.git")
 local util = require("gitdx.util")
@@ -13,6 +14,10 @@ local state = {
   line_map = {},
   open_style = nil,
   previous_bufnr = nil,
+  previous_winfixbuf = nil,
+  lock_group = nil,
+  allow_window_replace = false,
+  lock_guard = false,
 }
 
 local function panel_is_open()
@@ -29,6 +34,13 @@ local function clear_state()
   state.line_map = {}
   state.open_style = nil
   state.previous_bufnr = nil
+  state.previous_winfixbuf = nil
+  if state.lock_group then
+    pcall(vim.api.nvim_del_augroup_by_id, state.lock_group)
+    state.lock_group = nil
+  end
+  state.allow_window_replace = false
+  state.lock_guard = false
 end
 
 local function status_group(status)
@@ -44,6 +56,10 @@ local function status_group(status)
     return "GitDxPanelStatusRename"
   end
 
+  if status == "U" then
+    return "GitDxPanelStatusConflict"
+  end
+
   return "GitDxPanelStatusChange"
 end
 
@@ -53,6 +69,7 @@ local function sum_changes(entries)
     M = 0,
     D = 0,
     R = 0,
+    U = 0,
   }
 
   for _, entry in ipairs(entries) do
@@ -101,6 +118,9 @@ local function render_entries(entries)
 
     local file_indent = string.rep("  ", #dirs)
     local line = string.format("%s%s %s", file_indent, entry.status, filename)
+    if entry.status == "U" then
+      line = string.format("%s  [conflict]", line)
+    end
     if entry.status == "R" and entry.old_path and entry.old_path ~= "" then
       line = string.format("%s  <- %s", line, entry.old_path)
     end
@@ -141,6 +161,82 @@ local function panel_path()
   return vim.fn.getcwd()
 end
 
+local function restore_locked_panel_window()
+  if state.open_style ~= "current" then
+    return
+  end
+
+  if not state.winid or not vim.api.nvim_win_is_valid(state.winid) then
+    return
+  end
+
+  vim.wo[state.winid].winfixbuf = state.previous_winfixbuf == true
+end
+
+local function enforce_panel_window_buffer()
+  if state.lock_guard or state.allow_window_replace then
+    return
+  end
+
+  if not panel_is_open() then
+    return
+  end
+
+  if not state.winid or not vim.api.nvim_win_is_valid(state.winid) then
+    return
+  end
+
+  if not state.bufnr or not vim.api.nvim_buf_is_valid(state.bufnr) then
+    clear_state()
+    return
+  end
+
+  local shown_buf = vim.api.nvim_win_get_buf(state.winid)
+  if shown_buf == state.bufnr then
+    return
+  end
+
+  state.lock_guard = true
+  local previous_lock = vim.wo[state.winid].winfixbuf == true
+  vim.wo[state.winid].winfixbuf = false
+  pcall(vim.api.nvim_win_set_buf, state.winid, state.bufnr)
+  vim.wo[state.winid].winfixbuf = previous_lock
+  state.lock_guard = false
+
+  util.notify("GitDx panel window is locked. Use q to close panel first.", vim.log.levels.WARN)
+end
+
+local function run_with_unlocked_panel_window(callback)
+  if not state.winid or not vim.api.nvim_win_is_valid(state.winid) then
+    return pcall(callback)
+  end
+
+  local win = state.winid
+  local was_locked = vim.wo[win].winfixbuf == true
+
+  if was_locked then
+    vim.wo[win].winfixbuf = false
+  end
+
+  local previous_allow = state.allow_window_replace
+  state.allow_window_replace = true
+  local ok, err = pcall(callback)
+  state.allow_window_replace = previous_allow
+
+  local should_relock = was_locked
+    and state.bufnr
+    and vim.api.nvim_buf_is_valid(state.bufnr)
+    and state.winid
+    and vim.api.nvim_win_is_valid(state.winid)
+    and vim.api.nvim_win_get_buf(state.winid) == state.bufnr
+
+  if should_relock then
+    vim.wo[state.winid].winfixbuf = true
+  end
+
+  return ok, err
+end
+
 local function close_panel_window()
   if not state.winid or not vim.api.nvim_win_is_valid(state.winid) then
     if state.bufnr and vim.api.nvim_buf_is_valid(state.bufnr) then
@@ -154,6 +250,8 @@ local function close_panel_window()
     local panel_buf = state.bufnr
     local previous_buf = state.previous_bufnr
 
+    vim.wo[win].winfixbuf = false
+
     if previous_buf and vim.api.nvim_buf_is_valid(previous_buf) then
       pcall(vim.api.nvim_win_set_buf, win, previous_buf)
     else
@@ -161,6 +259,8 @@ local function close_panel_window()
         vim.cmd("enew")
       end)
     end
+
+    restore_locked_panel_window()
 
     if panel_buf and vim.api.nvim_buf_is_valid(panel_buf) then
       pcall(vim.api.nvim_buf_delete, panel_buf, { force = true })
@@ -172,6 +272,7 @@ local function close_panel_window()
 end
 
 function M.close()
+  state.allow_window_replace = true
   close_panel_window()
   clear_state()
 end
@@ -203,10 +304,12 @@ local function ensure_panel(open_style)
 
   local win
   local previous_bufnr = nil
+  local previous_winfixbuf = nil
 
   if open_style == "current" then
     win = vim.api.nvim_get_current_win()
     previous_bufnr = vim.api.nvim_win_get_buf(win)
+    previous_winfixbuf = vim.wo[win].winfixbuf == true
   else
     local panel_opts = config.get().panel
     local cmd
@@ -236,6 +339,7 @@ local function ensure_panel(open_style)
   vim.wo[win].wrap = false
   vim.wo[win].cursorline = true
   vim.wo[win].winfixwidth = open_style == "split"
+  vim.wo[win].winfixbuf = true
 
   vim.keymap.set("n", "q", M.close, { buffer = buf, silent = true, desc = "GitDx panel close" })
   vim.keymap.set("n", "r", M.refresh, { buffer = buf, silent = true, desc = "GitDx panel refresh" })
@@ -252,10 +356,18 @@ local function ensure_panel(open_style)
     silent = true,
     desc = "GitDx panel open diff under mouse",
   })
+  for _, name in ipairs({ "Ex", "Explore" }) do
+    pcall(vim.api.nvim_buf_create_user_command, buf, name, function()
+      util.notify(":" .. name .. " is disabled in GitDx panel. Use q to close panel first.", vim.log.levels.WARN)
+    end, {
+      desc = "GitDx panel command lock",
+    })
+  end
 
   vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
     buffer = buf,
     callback = function()
+      restore_locked_panel_window()
       clear_state()
     end,
   })
@@ -264,6 +376,15 @@ local function ensure_panel(open_style)
   state.winid = win
   state.open_style = open_style
   state.previous_bufnr = previous_bufnr
+  state.previous_winfixbuf = previous_winfixbuf
+  state.lock_group = vim.api.nvim_create_augroup(string.format("GitDxPanelLock_%d", buf), { clear = true })
+
+  vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
+    group = state.lock_group,
+    callback = function()
+      enforce_panel_window_buffer()
+    end,
+  })
 
   return buf, win
 end
@@ -276,8 +397,8 @@ local function render(data, open_style)
   local root_display = vim.fn.fnamemodify(data.repo_root, ":~")
   local header = {
     string.format("GitDx Changes  %s", root_display),
-    string.format("A:%d  M:%d  D:%d  R:%d", summary.A, summary.M, summary.D, summary.R),
-    "Enter/Click: diff    r: refresh    q: close",
+    string.format("A:%d  M:%d  D:%d  R:%d  U:%d", summary.A, summary.M, summary.D, summary.R, summary.U),
+    "Enter/Click: diff (or conflict)    r: refresh    q: close",
     "",
   }
 
@@ -373,17 +494,35 @@ function M.is_open()
   return panel_is_open()
 end
 
-function M.open_current_entry()
-  if not panel_is_open() then
+local function open_conflict_entry(entry)
+  if not entry.abs_path or entry.abs_path == "" then
+    util.notify("Conflict entry has no path", vim.log.levels.WARN)
     return
   end
 
-  local lnum = vim.api.nvim_win_get_cursor(state.winid)[1]
-  local entry = state.line_map[lnum]
-  if not entry then
+  local escaped = vim.fn.fnameescape(entry.abs_path)
+  local ok_open, open_err = pcall(vim.cmd, "tabedit " .. escaped)
+  if not ok_open then
+    util.notify("Unable to open conflict file (" .. tostring(open_err) .. ")", vim.log.levels.ERROR)
     return
   end
 
+  local ranges, err = conflicts.get_buffer_ranges(0)
+  if not ranges then
+    util.notify(err or "Unable to inspect conflict markers", vim.log.levels.WARN)
+    return
+  end
+
+  if #ranges == 0 then
+    util.notify("Conflict file has no unresolved markers", vim.log.levels.WARN)
+    return
+  end
+
+  vim.api.nvim_win_set_cursor(0, { ranges[1].start_line, 0 })
+  util.notify(string.format("Opened conflict file (%d conflict blocks)", #ranges))
+end
+
+local function open_diff_entry(entry)
   if entry.status == "D" then
     diffview.open({
       path = entry.abs_path,
@@ -401,6 +540,31 @@ function M.open_current_entry()
   end
 
   diffview.open(opts)
+end
+
+function M.open_current_entry()
+  if not panel_is_open() then
+    return
+  end
+
+  local lnum = vim.api.nvim_win_get_cursor(state.winid)[1]
+  local entry = state.line_map[lnum]
+  if not entry then
+    return
+  end
+
+  local ok, err = run_with_unlocked_panel_window(function()
+    if entry.status == "U" then
+      open_conflict_entry(entry)
+      return
+    end
+
+    open_diff_entry(entry)
+  end)
+
+  if not ok then
+    util.notify("Unable to open selected entry (" .. tostring(err) .. ")", vim.log.levels.ERROR)
+  end
 end
 
 return M

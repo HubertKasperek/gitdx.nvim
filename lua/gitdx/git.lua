@@ -2,6 +2,15 @@ local util = require("gitdx.util")
 
 local M = {}
 local unpack_fn = table.unpack or unpack
+local conflict_pairs = {
+  DD = true,
+  AU = true,
+  UD = true,
+  UA = true,
+  DU = true,
+  AA = true,
+  UU = true,
+}
 
 local function run_command(argv)
   if vim.system then
@@ -137,6 +146,11 @@ local function split_null_terminated(text)
 end
 
 local function normalize_status(index_status, worktree_status)
+  local pair = (index_status or " ") .. (worktree_status or " ")
+  if conflict_pairs[pair] then
+    return "U"
+  end
+
   if index_status == "?" and worktree_status == "?" then
     return "A"
   end
@@ -200,6 +214,7 @@ function M.list_changes(start_path)
           path = path,
           old_path = old_path,
           abs_path = abs_path(repo_root .. "/" .. path),
+          conflict = status == "U",
           staged = index_status ~= " " and index_status ~= "?",
           unstaged = worktree_status ~= " " and worktree_status ~= "?",
         })
