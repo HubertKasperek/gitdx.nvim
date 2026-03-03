@@ -55,6 +55,7 @@ local defaults = {
     GitDxPanelStatusChange = { fg = "#D1AA5A", bold = true },
     GitDxPanelStatusDelete = { fg = "#D86A6A", bold = true },
     GitDxPanelStatusRename = { fg = "#68A0D8", bold = true },
+    GitDxPanelStatusConflict = { fg = "#F29E4C", bold = true },
     GitDxDiffAdd = { bg = "#14301F" },
     GitDxDiffDelete = { bg = "#2A2F38" },
     GitDxDiffChange = { bg = "#1C2740" },

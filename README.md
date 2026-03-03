@@ -5,11 +5,12 @@ A Neovim plugin focused on developer experience:
 - Optional inline highlights for added and changed lines (off by default)
 - Lightweight deleted-line hints (for example `-2` at end-of-line)
 - Live change summary badge in `winbar` (`+A ~M -D`)
-- Changes panel (`:GitDx`) with changed/added/deleted/renamed files
+- Changes panel (`:GitDx`) with changed/added/deleted/renamed/conflict files
 - Side-by-side diff view:
   - file at `HEAD` (before changes)
   - current buffer (after changes)
   - Added content highlighted in green, neutral placeholders in gray
+  - Diff windows are buffer-locked to prevent accidental replacement (for example by `:Explore`)
   - GitDx winbar summary is hidden in diff windows to keep both panes aligned
 
 ## Requirements
@@ -71,24 +72,39 @@ After installation, the plugin auto-initializes.
 
 - `:GitDxDiff [ref]`
   - Open side-by-side diff for the current file
+  - Locks both diff panes against accidental buffer replacement
+  - Blocks `:Ex` / `:Explore` while diff is active to keep layout stable
   - Default ref is `HEAD`
   - Example: `:GitDxDiff HEAD~1`
 - `:GitDx`
   - Open/focus the GitDx changes panel
   - Unavailable while `:GitDxDiff` is active in the current tab (to avoid UI conflicts)
-  - Panel actions: `Enter` or mouse click (open diff), `r` (refresh), `q` (close)
+  - Shows conflict files with `U` status and conflict highlighting
+  - Panel actions: `Enter` or mouse click (open diff / open conflict file), `r` (refresh), `q` (close)
 - `:GitDxEx`
   - Open/focus the GitDx changes panel in the current window (like `:Ex` or `:Explore`)
   - Keeps `:GitDx` split-panel behavior unchanged
+  - Panel buffer is locked to prevent accidental replacement
 - `:GitDxPanelClose`
   - Close GitDx changes panel (shows warning if panel is not open)
 - `:GitDxDiffClose`
   - If diff was opened in a dedicated tab, close that tab
   - Otherwise close diff mode in the current tab and close the plugin base buffer
+- `:GitDxDiffEdit`
+  - Close active `:GitDxDiff` view and open the source file in a new tab
+  - Preserves cursor line from the diff source window
 - `:GitDxStats`
   - Show added/changed/deleted line counts for the current buffer (`GitDx +A ~M -D`)
 - `:GitDxRanges`
-  - Show changed line ranges (add/change/delete hunks) for the current buffer
+  - Open an interactive ranges list (location list) for changed hunks
+  - `Enter` or mouse click jumps to selected line, `q` closes the list
+  - While `:GitDxDiff` is active, falls back to plain text output (no extra windows)
+  - If there are no changes, shows a notification instead of opening a list
+- `:GitDxConflictRanges`
+  - Open an interactive ranges list for unresolved conflict blocks
+  - `Enter` or mouse click jumps to selected conflict, `q` closes the list
+  - While `:GitDxDiff` is active, falls back to plain text output (no extra windows)
+  - If there are no conflicts, shows a notification instead of opening a list
 - `:GitDxRefresh`
   - Force live diff recalculation for current buffer
 - `:GitDxToggle`
@@ -176,6 +192,7 @@ require("gitdx").setup({
     GitDxPanelStatusChange = { fg = "#D1AA5A", bold = true },
     GitDxPanelStatusDelete = { fg = "#D86A6A", bold = true },
     GitDxPanelStatusRename = { fg = "#68A0D8", bold = true },
+    GitDxPanelStatusConflict = { fg = "#F29E4C", bold = true },
 
     GitDxDiffAdd = { bg = "#14301F" },
     GitDxDiffDelete = { bg = "#2A2F38" },
@@ -222,8 +239,10 @@ require("gitdx").setup({
 ```lua
 vim.keymap.set("n", "<leader>gd", "<cmd>GitDxDiff<cr>", { desc = "GitDx: Diff split" })
 vim.keymap.set("n", "<leader>gD", "<cmd>GitDxDiffClose<cr>", { desc = "GitDx: Close diff" })
+vim.keymap.set("n", "<leader>ge", "<cmd>GitDxDiffEdit<cr>", { desc = "GitDx: Close diff and edit file" })
 vim.keymap.set("n", "<leader>gs", "<cmd>GitDx<cr>", { desc = "GitDx: Source control panel" })
 vim.keymap.set("n", "<leader>gS", "<cmd>GitDxEx<cr>", { desc = "GitDx: Source control panel (current window)" })
+vim.keymap.set("n", "<leader>gc", "<cmd>GitDxConflictRanges<cr>", { desc = "GitDx: Conflict ranges" })
 vim.keymap.set("n", "<leader>gr", "<cmd>GitDxRefresh<cr>", { desc = "GitDx: Refresh" })
 vim.keymap.set("n", "<leader>gt", "<cmd>GitDxToggle<cr>", { desc = "GitDx: Toggle" })
 ```
@@ -233,7 +252,7 @@ vim.keymap.set("n", "<leader>gt", "<cmd>GitDxToggle<cr>", { desc = "GitDx: Toggl
 1. Keep live diff enabled for constant feedback
 2. Run `:GitDxDiff` before committing
 3. Review both sides quickly
-4. Close with `:GitDxDiffClose`
+4. Close with `:GitDxDiffClose` (or `:GitDxDiffEdit` to jump into normal editing tab)
 5. Commit after visual verification
 
 ## Troubleshooting
@@ -246,6 +265,9 @@ vim.keymap.set("n", "<leader>gt", "<cmd>GitDxToggle<cr>", { desc = "GitDx: Toggl
   - Git must be available in `PATH`
 - `:GitDx` is blocked while diff view is active:
   - Close diff first with `:GitDxDiffClose`
+- Conflict navigation seems empty:
+  - Ensure the file contains unresolved markers (`<<<<<<<`, `=======`, `>>>>>>>`)
+  - Run `:GitDxConflictRanges` in the conflict buffer
 
 ## License
 
