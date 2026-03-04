@@ -492,10 +492,6 @@ local function register_commands()
     desc = "Show changed line ranges for current buffer",
   })
 
-  vim.api.nvim_create_user_command("GitDxDiffRanges", run_ranges_command, {
-    desc = "Show changed line ranges for active GitDx diff view",
-  })
-
   local function run_conflict_ranges_command()
     ensure_setup()
     local ranges, info_or_err = conflicts.get_buffer_ranges(0)

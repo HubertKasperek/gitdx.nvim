@@ -110,8 +110,10 @@ After installation, the plugin auto-initializes.
   - `Enter` or mouse click jumps to selected line, `q` closes the list
   - While `:GitDxDiff` is active, falls back to plain text output (no extra windows)
   - If there are no changes, shows a notification instead of opening a list
-- `:GitDxDiffRanges`
-  - Alias for `:GitDxRanges` (handy during active diff workflows)
+  - Output format:
+    - `old:<range>` means line range in the left/base version
+    - `new:<range>` means line range in the right/current version
+    - In `:GitDxDiff <from_ref> <to_ref>`, `old` = `<from_ref>` and `new` = `<to_ref>`
 - `:GitDxConflictRanges`
   - Open an interactive ranges list for unresolved conflict blocks
   - `Enter` or mouse click jumps to selected conflict, `q` closes the list
