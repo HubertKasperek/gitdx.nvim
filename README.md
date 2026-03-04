@@ -6,9 +6,11 @@ A Neovim plugin focused on developer experience:
 - Lightweight deleted-line hints (for example `-2` at end-of-line)
 - Live change summary badge in `winbar` (`+A ~M -D`)
 - Changes panel (`:GitDx`) with changed/added/deleted/renamed/conflict files
+- Refs compare panel via `:GitDx <from_ref> [to_ref]`
 - Side-by-side diff view:
   - file at `HEAD` (before changes)
   - current buffer (after changes)
+  - optional `ref -> ref` comparison for one file (`:GitDxDiff`)
   - Added content highlighted in green, neutral placeholders in gray
   - Diff windows are buffer-locked to prevent accidental replacement (for example by `:Explore`)
   - GitDx winbar summary is hidden in diff windows to keep both panes aligned
@@ -70,20 +72,27 @@ After installation, the plugin auto-initializes.
 
 ## Commands
 
-- `:GitDxDiff [ref]`
-  - Open side-by-side diff for the current file
+- `:GitDxDiff [from_ref] [to_ref] [path]`
+  - Open side-by-side diff for the current file (or refs compare)
+  - `:GitDxDiff` opens working tree vs `HEAD`
+  - `:GitDxDiff <ref>` opens working tree vs `<ref>`
+  - `:GitDxDiff <from_ref> <to_ref>` opens refs compare for current file
+  - `:GitDxDiff <from_ref> <to_ref> <path>` opens refs compare for explicit file path
   - Locks both diff panes against accidental buffer replacement
   - Blocks `:Ex` / `:Explore` while diff is active to keep layout stable
-  - Default ref is `HEAD`
-  - Example: `:GitDxDiff HEAD~1`
-- `:GitDx`
-  - Open/focus the GitDx changes panel
+  - Automatically shows `GitDx +A ~M -D` stats after opening
+  - Examples: `:GitDxDiff`, `:GitDxDiff HEAD~1`, `:GitDxDiff HEAD~5 HEAD`, `:GitDxDiff v1.0.0 v1.1.0 lua/gitdx/diffview.lua`
+- `:GitDx [from_ref] [to_ref]`
+  - `:GitDx` opens/focuses the working-tree panel (same as before)
+  - `:GitDx <from_ref>` opens refs compare panel for `<from_ref> -> HEAD`
+  - `:GitDx <from_ref> <to_ref>` opens refs compare panel for explicit range
   - Unavailable while `:GitDxDiff` is active in the current tab (to avoid UI conflicts)
-  - Shows conflict files with `U` status and conflict highlighting
+  - Shows conflict files with `U` status and conflict highlighting in working-tree mode
   - Panel actions: `Enter` or mouse click (open diff / open conflict file), `r` (refresh), `q` (close)
-- `:GitDxEx`
-  - Open/focus the GitDx changes panel in the current window (like `:Ex` or `:Explore`)
-  - Keeps `:GitDx` split-panel behavior unchanged
+  - Opening diff from panel (`Enter` / click) also shows `GitDx +A ~M -D` stats automatically
+- `:GitDxEx [from_ref] [to_ref]`
+  - Same behavior as `:GitDx`, but opens panel in current window (like `:Ex` or `:Explore`)
+  - Keeps split-panel behavior unchanged for plain `:GitDx`
   - Panel buffer is locked to prevent accidental replacement
 - `:GitDxPanelClose`
   - Close GitDx changes panel (shows warning if panel is not open)
@@ -95,11 +104,14 @@ After installation, the plugin auto-initializes.
   - Preserves cursor line from the diff source window
 - `:GitDxStats`
   - Show added/changed/deleted line counts for the current buffer (`GitDx +A ~M -D`)
+  - Works in active `:GitDxDiff` view (counts come from visible diff panes)
 - `:GitDxRanges`
   - Open an interactive ranges list (location list) for changed hunks
   - `Enter` or mouse click jumps to selected line, `q` closes the list
   - While `:GitDxDiff` is active, falls back to plain text output (no extra windows)
   - If there are no changes, shows a notification instead of opening a list
+- `:GitDxDiffRanges`
+  - Alias for `:GitDxRanges` (handy during active diff workflows)
 - `:GitDxConflictRanges`
   - Open an interactive ranges list for unresolved conflict blocks
   - `Enter` or mouse click jumps to selected conflict, `q` closes the list

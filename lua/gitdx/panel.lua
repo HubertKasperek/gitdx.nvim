@@ -11,6 +11,9 @@ local state = {
   bufnr = nil,
   winid = nil,
   repo_root = nil,
+  mode = "working",
+  from_ref = nil,
+  to_ref = nil,
   line_map = {},
   open_style = nil,
   previous_bufnr = nil,
@@ -31,6 +34,9 @@ local function clear_state()
   state.bufnr = nil
   state.winid = nil
   state.repo_root = nil
+  state.mode = "working"
+  state.from_ref = nil
+  state.to_ref = nil
   state.line_map = {}
   state.open_style = nil
   state.previous_bufnr = nil
@@ -159,6 +165,43 @@ local function panel_path()
   end
 
   return vim.fn.getcwd()
+end
+
+local function normalize_mode(value)
+  if value == "refs" then
+    return "refs"
+  end
+
+  return "working"
+end
+
+local function make_panel_header(data)
+  local summary = sum_changes(data.entries)
+  local root_display = vim.fn.fnamemodify(data.repo_root, ":~")
+
+  if data.mode == "refs" then
+    return {
+      string.format("GitDx Compare  %s", root_display),
+      string.format(
+        "%s -> %s    A:%d  M:%d  D:%d  R:%d",
+        data.from_ref or "?",
+        data.to_ref or "?",
+        summary.A,
+        summary.M,
+        summary.D,
+        summary.R
+      ),
+      "Enter/Click: open ref diff    r: refresh    q: close",
+      "",
+    }
+  end
+
+  return {
+    string.format("GitDx Changes  %s", root_display),
+    string.format("A:%d  M:%d  D:%d  R:%d  U:%d", summary.A, summary.M, summary.D, summary.R, summary.U),
+    "Enter/Click: diff (or conflict)    r: refresh    q: close",
+    "",
+  }
 end
 
 local function restore_locked_panel_window()
@@ -392,15 +435,11 @@ end
 local function render(data, open_style)
   local buf, win = ensure_panel(open_style)
   state.repo_root = data.repo_root
+  state.mode = normalize_mode(data.mode)
+  state.from_ref = data.from_ref
+  state.to_ref = data.to_ref
 
-  local summary = sum_changes(data.entries)
-  local root_display = vim.fn.fnamemodify(data.repo_root, ":~")
-  local header = {
-    string.format("GitDx Changes  %s", root_display),
-    string.format("A:%d  M:%d  D:%d  R:%d  U:%d", summary.A, summary.M, summary.D, summary.R, summary.U),
-    "Enter/Click: diff (or conflict)    r: refresh    q: close",
-    "",
-  }
+  local header = make_panel_header(data)
 
   local body, body_hl, line_map = render_entries(data.entries)
   if #body == 0 then
@@ -450,7 +489,31 @@ end
 function M.refresh(opts)
   opts = opts or {}
   local open_style = opts.open_style or state.open_style or "split"
-  local data, err = git.list_changes(panel_path())
+  local mode = normalize_mode(opts.mode or state.mode)
+
+  local data
+  local err
+  if mode == "refs" then
+    local from_ref = util.trim(opts.from_ref or state.from_ref)
+    local to_ref = util.trim(opts.to_ref or state.to_ref)
+    if from_ref == "" or to_ref == "" then
+      util.notify("GitDx refs panel requires <from_ref> and <to_ref>", vim.log.levels.WARN)
+      return
+    end
+
+    data, err = git.list_ref_changes(panel_path(), from_ref, to_ref)
+    if data then
+      data.mode = "refs"
+      data.from_ref = from_ref
+      data.to_ref = to_ref
+    end
+  else
+    data, err = git.list_changes(panel_path())
+    if data then
+      data.mode = "working"
+    end
+  end
+
   if not data then
     util.notify(err or "Unable to load repository status", vim.log.levels.ERROR)
     return
@@ -476,18 +539,87 @@ function M.open(opts)
   end
 
   if panel_is_open() then
-    M.refresh()
+    if state.mode ~= "working" then
+      M.close()
+      M.refresh({ open_style = open_style, mode = "working" })
+      return
+    end
+
+    M.refresh({ mode = "working" })
     if vim.api.nvim_win_is_valid(state.winid) then
       vim.api.nvim_set_current_win(state.winid)
     end
     return
   end
 
-  M.refresh({ open_style = open_style })
+  M.refresh({
+    open_style = open_style,
+    mode = "working",
+  })
 end
 
 function M.open_in_current_window()
   M.open({ open_style = "current" })
+end
+
+function M.open_refs(opts)
+  opts = opts or {}
+  local open_style = opts.open_style or "split"
+  local from_ref = util.trim(opts.from_ref)
+  local to_ref = util.trim(opts.to_ref)
+
+  if from_ref == "" or to_ref == "" then
+    util.notify("Usage: <from_ref> <to_ref>", vim.log.levels.WARN)
+    return
+  end
+
+  if diffview.is_active() then
+    util.notify(
+      "GitDx panel is unavailable during an active GitDxDiff view. Close diff first with :GitDxDiffClose.",
+      vim.log.levels.WARN
+    )
+    return
+  end
+
+  if panel_is_open() and state.open_style ~= open_style then
+    M.close()
+  end
+
+  if panel_is_open() then
+    if state.mode ~= "refs" or state.from_ref ~= from_ref or state.to_ref ~= to_ref then
+      M.close()
+      M.refresh({
+        open_style = open_style,
+        mode = "refs",
+        from_ref = from_ref,
+        to_ref = to_ref,
+      })
+      return
+    end
+
+    M.refresh({
+      mode = "refs",
+      from_ref = from_ref,
+      to_ref = to_ref,
+    })
+    if vim.api.nvim_win_is_valid(state.winid) then
+      vim.api.nvim_set_current_win(state.winid)
+    end
+    return
+  end
+
+  M.refresh({
+    open_style = open_style,
+    mode = "refs",
+    from_ref = from_ref,
+    to_ref = to_ref,
+  })
+end
+
+function M.open_refs_in_current_window(opts)
+  opts = opts or {}
+  opts.open_style = "current"
+  M.open_refs(opts)
 end
 
 function M.is_open()
@@ -542,6 +674,44 @@ local function open_diff_entry(entry)
   diffview.open(opts)
 end
 
+local function open_ref_diff_entry(entry)
+  if not state.from_ref or not state.to_ref then
+    util.notify("Unable to open ref diff without selected refs", vim.log.levels.WARN)
+    return
+  end
+
+  if not entry.abs_path or entry.abs_path == "" then
+    util.notify("Entry has no path", vim.log.levels.WARN)
+    return
+  end
+
+  local opts = {
+    from_ref = state.from_ref,
+    to_ref = state.to_ref,
+    path = entry.abs_path,
+  }
+
+  if entry.status == "R" and entry.old_path and state.repo_root then
+    opts.from_path = state.repo_root .. "/" .. entry.old_path
+    opts.to_path = entry.abs_path
+  end
+
+  diffview.open_between_refs(opts)
+end
+
+local function notify_opened_diff_stats()
+  if not diffview.is_active() then
+    return
+  end
+
+  local _, stats_or_err = diffview.get_hunks(0)
+  if type(stats_or_err) ~= "table" then
+    return
+  end
+
+  util.notify(string.format("GitDx +%d ~%d -%d", stats_or_err.added, stats_or_err.changed, stats_or_err.deleted))
+end
+
 function M.open_current_entry()
   if not panel_is_open() then
     return
@@ -554,12 +724,19 @@ function M.open_current_entry()
   end
 
   local ok, err = run_with_unlocked_panel_window(function()
+    if state.mode == "refs" then
+      open_ref_diff_entry(entry)
+      notify_opened_diff_stats()
+      return
+    end
+
     if entry.status == "U" then
       open_conflict_entry(entry)
       return
     end
 
     open_diff_entry(entry)
+    notify_opened_diff_stats()
   end)
 
   if not ok then

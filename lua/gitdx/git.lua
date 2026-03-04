@@ -82,6 +82,25 @@ function M.find_repo_root(path)
   return M.find_repo_root_from(path)
 end
 
+function M.ref_exists(repo_root, ref)
+  if type(repo_root) ~= "string" or repo_root == "" then
+    return false
+  end
+
+  if type(ref) ~= "string" or util.trim(ref) == "" then
+    return false
+  end
+
+  local code = run_git(repo_root, {
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    ref .. "^{commit}",
+  })
+
+  return code == 0
+end
+
 function M.is_tracked(repo_root, relative_path)
   local code = run_git(repo_root, { "ls-files", "--error-unmatch", "--", relative_path })
   return code == 0
@@ -170,6 +189,16 @@ local function normalize_status(index_status, worktree_status)
   return "M"
 end
 
+local function sort_entries(entries)
+  table.sort(entries, function(a, b)
+    if a.path == b.path then
+      return a.status < b.status
+    end
+
+    return a.path < b.path
+  end)
+end
+
 function M.list_changes(start_path)
   local repo_root = M.find_repo_root_from(start_path or vim.fn.getcwd())
   if not repo_root then
@@ -222,17 +251,100 @@ function M.list_changes(start_path)
     end
   end
 
-  table.sort(entries, function(a, b)
-    if a.path == b.path then
-      return a.status < b.status
-    end
-
-    return a.path < b.path
-  end)
+  sort_entries(entries)
 
   return {
     repo_root = repo_root,
     entries = entries,
+  }
+end
+
+function M.list_ref_changes(start_path, from_ref, to_ref)
+  local repo_root = M.find_repo_root_from(start_path or vim.fn.getcwd())
+  if not repo_root then
+    return nil, "Current directory is outside a Git repository"
+  end
+
+  from_ref = util.trim(from_ref)
+  to_ref = util.trim(to_ref)
+  if from_ref == "" or to_ref == "" then
+    return nil, "Usage: <from_ref> <to_ref>"
+  end
+
+  if not M.ref_exists(repo_root, from_ref) then
+    return nil, "Unknown Git ref: " .. from_ref
+  end
+
+  if not M.ref_exists(repo_root, to_ref) then
+    return nil, "Unknown Git ref: " .. to_ref
+  end
+
+  local code, stdout, stderr = run_git(repo_root, {
+    "--no-pager",
+    "diff",
+    "--name-status",
+    "--find-renames",
+    "-z",
+    from_ref,
+    to_ref,
+    "--",
+  })
+
+  if code ~= 0 then
+    return nil, util.trim(stderr) ~= "" and util.trim(stderr) or "Unable to read Git diff between refs"
+  end
+
+  local records = split_null_terminated(stdout)
+  local entries = {}
+  local i = 1
+
+  while i <= #records do
+    local status_token = records[i]
+    i = i + 1
+
+    if status_token and status_token ~= "" then
+      local status_code = status_token:sub(1, 1)
+
+      if status_code == "R" or status_code == "C" then
+        local old_path = records[i] or ""
+        local new_path = records[i + 1] or ""
+        i = i + 2
+
+        if new_path ~= "" then
+          table.insert(entries, {
+            status = "R",
+            path = new_path,
+            old_path = old_path ~= "" and old_path or nil,
+            abs_path = abs_path(repo_root .. "/" .. new_path),
+          })
+        end
+      else
+        local path = records[i] or ""
+        i = i + 1
+
+        if path ~= "" then
+          local status = status_code
+          if status ~= "A" and status ~= "M" and status ~= "D" then
+            status = "M"
+          end
+
+          table.insert(entries, {
+            status = status,
+            path = path,
+            abs_path = abs_path(repo_root .. "/" .. path),
+          })
+        end
+      end
+    end
+  end
+
+  sort_entries(entries)
+
+  return {
+    repo_root = repo_root,
+    entries = entries,
+    from_ref = from_ref,
+    to_ref = to_ref,
   }
 end
 

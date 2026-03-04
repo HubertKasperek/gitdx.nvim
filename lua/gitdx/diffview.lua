@@ -14,6 +14,7 @@ local EX_BLOCK_COUNT_VAR = "gitdx_diff_ex_block_count"
 local EX_BLOCK_CREATED_VAR = "gitdx_diff_ex_block_created"
 local DIFF_STATE_TAB_VAR = "gitdx_diff_state"
 local DIFF_OWNED_TAB_VAR = "gitdx_diff_owned_tab"
+local forced_hiddenoff = false
 
 local function sync_live_window_decorations()
   local ok, live = pcall(require, "gitdx.live")
@@ -22,6 +23,87 @@ local function sync_live_window_decorations()
   end
 
   pcall(live.sync_windows)
+end
+
+local function split_diffopt_items(value)
+  if type(value) ~= "string" or value == "" then
+    return {}
+  end
+
+  local items = {}
+  for token in value:gmatch("[^,]+") do
+    local item = util.trim(token)
+    if item ~= "" then
+      table.insert(items, item)
+    end
+  end
+  return items
+end
+
+local function diffopt_has_item(value, target)
+  for _, item in ipairs(split_diffopt_items(value)) do
+    if item == target then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function encode_diffopt(items)
+  return table.concat(items, ",")
+end
+
+local function ensure_hiddenoff_diffopt()
+  local current = vim.o.diffopt or ""
+  if diffopt_has_item(current, "hiddenoff") then
+    return
+  end
+
+  local items = split_diffopt_items(current)
+  table.insert(items, "hiddenoff")
+  vim.o.diffopt = encode_diffopt(items)
+  forced_hiddenoff = true
+end
+
+local function has_active_gitdx_diff_anywhere()
+  for _, tabpage in ipairs(vim.api.nvim_list_tabpages()) do
+    if vim.api.nvim_tabpage_is_valid(tabpage) then
+      local ok, state = pcall(vim.api.nvim_tabpage_get_var, tabpage, DIFF_STATE_TAB_VAR)
+      if not ok then
+        state = nil
+      end
+      if type(state) == "table" then
+        for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+          if vim.api.nvim_win_is_valid(win) and vim.wo[win].diff then
+            return true
+          end
+        end
+      end
+    end
+  end
+
+  return false
+end
+
+local function maybe_restore_hiddenoff_diffopt()
+  if not forced_hiddenoff then
+    return
+  end
+
+  if has_active_gitdx_diff_anywhere() then
+    return
+  end
+
+  local items = {}
+  for _, item in ipairs(split_diffopt_items(vim.o.diffopt or "")) do
+    if item ~= "hiddenoff" then
+      table.insert(items, item)
+    end
+  end
+
+  vim.o.diffopt = encode_diffopt(items)
+  forced_hiddenoff = false
 end
 
 local function get_tab_var(tabpage, name)
@@ -366,12 +448,67 @@ local function infer_filetype(path)
   return filetype
 end
 
+local function set_unique_buffer_name(buf, preferred_name)
+  if type(preferred_name) ~= "string" or preferred_name == "" then
+    return
+  end
+
+  local function try_set(name)
+    local existing = vim.fn.bufnr(name, false)
+    if existing >= 0 and existing ~= buf then
+      return false
+    end
+
+    local ok = pcall(vim.api.nvim_buf_set_name, buf, name)
+    return ok
+  end
+
+  if try_set(preferred_name) then
+    return
+  end
+
+  for index = 2, 1000 do
+    local candidate = string.format("%s {%d}", preferred_name, index)
+    if try_set(candidate) then
+      return
+    end
+  end
+end
+
+local function create_ref_buffer(path, lines, ref, filetype)
+  local buf = vim.api.nvim_create_buf(false, true)
+  local buf_name = string.format("%s [%s]", source_file_display_name(path), ref)
+
+  set_unique_buffer_name(buf, buf_name)
+
+  local content = lines
+  if #content == 0 then
+    content = { "" }
+  end
+
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, content)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].undofile = false
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].readonly = true
+
+  if filetype and filetype ~= "" then
+    vim.bo[buf].filetype = filetype
+  end
+
+  vim.b[buf].gitdx_diff_ephemeral = true
+
+  return buf
+end
+
 local function create_left_buffer(source_buf, base_lines, ref)
   local source_name = vim.api.nvim_buf_get_name(source_buf)
   local left_buf = vim.api.nvim_create_buf(false, true)
   local left_name = string.format("%s [%s]", source_file_display_name(source_name), ref)
 
-  pcall(vim.api.nvim_buf_set_name, left_buf, left_name)
+  set_unique_buffer_name(left_buf, left_name)
 
   local lines = base_lines
   if #lines == 0 then
@@ -400,7 +537,7 @@ local function create_deleted_source_buffer(source_path)
   local source_buf = vim.api.nvim_create_buf(false, true)
   local display_name = string.format("%s [working tree deleted]", source_file_display_name(source_path))
 
-  pcall(vim.api.nvim_buf_set_name, source_buf, display_name)
+  set_unique_buffer_name(source_buf, display_name)
   vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, { "" })
   vim.bo[source_buf].buftype = "nofile"
   vim.bo[source_buf].bufhidden = "wipe"
@@ -445,6 +582,71 @@ local function resolve_source(opts)
   return source_buf, source_path, nil, cursor
 end
 
+local function resolve_ref_compare_target(opts)
+  if opts.path then
+    local source_path = to_abs_path(opts.path)
+    local filetype = infer_filetype(source_path)
+
+    local source_buf = vim.fn.bufnr(source_path, false)
+    if source_buf >= 0 and vim.api.nvim_buf_is_valid(source_buf) then
+      local loaded_filetype = vim.bo[source_buf].filetype
+      if loaded_filetype and loaded_filetype ~= "" then
+        filetype = loaded_filetype
+      end
+    end
+
+    return {
+      path = source_path,
+      filetype = filetype,
+      cursor = { 1, 0 },
+    }, nil
+  end
+
+  local source_buf = vim.api.nvim_get_current_buf()
+  if util.is_regular_buffer(source_buf) then
+    return {
+      path = vim.api.nvim_buf_get_name(source_buf),
+      filetype = vim.bo[source_buf].filetype,
+      cursor = vim.api.nvim_win_get_cursor(0),
+    }, nil
+  end
+
+  local tab = vim.api.nvim_get_current_tabpage()
+  local state = get_tab_var(tab, DIFF_STATE_TAB_VAR)
+  if type(state) == "table" and type(state.source_path) == "string" and state.source_path ~= "" then
+    local source_path = to_abs_path(state.source_path)
+    local filetype = infer_filetype(source_path)
+    local cursor = { 1, 0 }
+
+    local right_win = tonumber(state.right_win)
+    if right_win and right_win > 0 and vim.api.nvim_win_is_valid(right_win) then
+      cursor = vim.api.nvim_win_get_cursor(right_win)
+      local right_buf = vim.api.nvim_win_get_buf(right_win)
+      local loaded_filetype = vim.bo[right_buf].filetype
+      if loaded_filetype and loaded_filetype ~= "" then
+        filetype = loaded_filetype
+      end
+    end
+
+    return {
+      path = source_path,
+      filetype = filetype,
+      cursor = cursor,
+    }, nil
+  end
+
+  local alternate = vim.fn.bufnr("#")
+  if type(alternate) == "number" and alternate > 0 and util.is_regular_buffer(alternate) then
+    return {
+      path = vim.api.nvim_buf_get_name(alternate),
+      filetype = vim.bo[alternate].filetype,
+      cursor = { 1, 0 },
+    }, nil
+  end
+
+  return nil, "Current buffer is not a file on disk; pass [path]"
+end
+
 local function apply_diff_window_style(win)
   local win_cfg = config.get().diffview
   local sync_scroll = win_cfg.sync_scroll ~= false
@@ -461,6 +663,29 @@ local function apply_diff_window_style(win)
   vim.wo[win].wrap = false
   vim.wo[win].winfixbuf = true
   vim.wo[win].winhighlight = win_cfg.winhighlight
+end
+
+local function set_window_buffer(win, buf)
+  if not vim.api.nvim_win_is_valid(win) then
+    return false, "Window is no longer valid"
+  end
+
+  local was_locked = vim.wo[win].winfixbuf == true
+  if was_locked then
+    vim.wo[win].winfixbuf = false
+  end
+
+  local ok, err = pcall(vim.api.nvim_win_set_buf, win, buf)
+
+  if was_locked and vim.api.nvim_win_is_valid(win) then
+    vim.wo[win].winfixbuf = true
+  end
+
+  if not ok then
+    return false, tostring(err)
+  end
+
+  return true
 end
 
 local function tab_has_active_diff(tabpage)
@@ -493,6 +718,89 @@ local function resolve_source_path_from_buffer(buf)
   end
 
   return name
+end
+
+local function relpath(root, path)
+  if not root or root == "" or not path or path == "" then
+    return nil
+  end
+
+  if vim.fs and vim.fs.relpath then
+    local ok, relative = pcall(vim.fs.relpath, root, path)
+    if ok and type(relative) == "string" and relative ~= "" then
+      return relative
+    end
+  end
+
+  local prefix = root
+  if prefix:sub(-1) ~= "/" then
+    prefix = prefix .. "/"
+  end
+
+  if path:sub(1, #prefix) == prefix then
+    return path:sub(#prefix + 1)
+  end
+
+  return nil
+end
+
+local function build_stats_from_hunks(hunks)
+  local stats = {
+    added = 0,
+    changed = 0,
+    deleted = 0,
+  }
+
+  for _, hunk in ipairs(hunks) do
+    if hunk.type == "add" then
+      stats.added = stats.added + (tonumber(hunk.count_new) or 0)
+    elseif hunk.type == "change" then
+      stats.changed = stats.changed + (tonumber(hunk.count_new) or 0)
+    elseif hunk.type == "delete" then
+      stats.deleted = stats.deleted + (tonumber(hunk.count_old) or 0)
+    end
+  end
+
+  return stats
+end
+
+local function resolve_diff_buffers_from_state(tabpage, state)
+  if type(state) ~= "table" then
+    return nil, nil, "No active GitDx diff view in current tab"
+  end
+
+  local left_buf = nil
+  local right_buf = nil
+
+  if type(state.left_win) == "number" and vim.api.nvim_win_is_valid(state.left_win) then
+    left_buf = vim.api.nvim_win_get_buf(state.left_win)
+  end
+
+  if type(state.right_win) == "number" and vim.api.nvim_win_is_valid(state.right_win) then
+    right_buf = vim.api.nvim_win_get_buf(state.right_win)
+  end
+
+  if (not left_buf or not vim.api.nvim_buf_is_valid(left_buf)) and type(state.left_buf) == "number" then
+    if vim.api.nvim_buf_is_valid(state.left_buf) then
+      left_buf = state.left_buf
+    end
+  end
+
+  if (not right_buf or not vim.api.nvim_buf_is_valid(right_buf)) and type(state.source_buf) == "number" then
+    if vim.api.nvim_buf_is_valid(state.source_buf) then
+      right_buf = state.source_buf
+    end
+  end
+
+  if not left_buf or not vim.api.nvim_buf_is_valid(left_buf) then
+    return nil, nil, "Unable to resolve left diff buffer"
+  end
+
+  if not right_buf or not vim.api.nvim_buf_is_valid(right_buf) then
+    return nil, nil, "Unable to resolve right diff buffer"
+  end
+
+  return left_buf, right_buf
 end
 
 local function resolve_source_window(tabpage, state)
@@ -572,6 +880,10 @@ function M.open(opts)
     return
   end
 
+  if config.get().diffview.open_in_tab == false and M.is_active() then
+    M.close()
+  end
+
   local opened_diff_tab = false
   if config.get().diffview.open_in_tab then
     vim.cmd("tabnew")
@@ -583,18 +895,27 @@ function M.open(opts)
 
   local left_win = vim.api.nvim_get_current_win()
   local left_buf = create_left_buffer(source_buf, base.lines, ref)
-  vim.api.nvim_win_set_buf(left_win, left_buf)
+  local ok_left, left_err = set_window_buffer(left_win, left_buf)
+  if not ok_left then
+    util.notify("Unable to open left diff pane (" .. tostring(left_err) .. ")", vim.log.levels.ERROR)
+    return
+  end
 
   -- Keep semantic layout stable: base on the left, working tree on the right,
   -- regardless of user 'splitright' setting.
   vim.cmd("rightbelow vsplit")
 
   local right_win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(right_win, source_buf)
+  local ok_right, right_err = set_window_buffer(right_win, source_buf)
+  if not ok_right then
+    util.notify("Unable to open right diff pane (" .. tostring(right_err) .. ")", vim.log.levels.ERROR)
+    return
+  end
   vim.api.nvim_win_set_cursor(right_win, cursor)
 
   vim.b[source_buf].gitdx_diff_source = true
 
+  ensure_hiddenoff_diffopt()
   apply_diff_window_style(left_win)
   apply_diff_window_style(right_win)
   register_horizontal_sync(left_win, right_win)
@@ -606,6 +927,148 @@ function M.open(opts)
     source_buf = source_buf,
     source_path = source_path,
     ref = ref,
+  })
+  block_explore_commands_for_state(get_diff_state(current_tab))
+
+  if config.get().diffview.keep_focus == "left" then
+    vim.api.nvim_set_current_win(left_win)
+  else
+    vim.api.nvim_set_current_win(right_win)
+  end
+
+  sync_live_window_decorations()
+end
+
+function M.open_between_refs(opts)
+  opts = opts or {}
+
+  local from_ref = util.trim(opts.from_ref)
+  local to_ref = util.trim(opts.to_ref)
+  if from_ref == "" or to_ref == "" then
+    util.notify("Usage: :GitDxDiff <from_ref> <to_ref> [path]", vim.log.levels.WARN)
+    return
+  end
+
+  local target, target_err = resolve_ref_compare_target(opts)
+  if not target then
+    util.notify(target_err or "Unable to resolve source file", vim.log.levels.WARN)
+    return
+  end
+
+  local from_path = opts.from_path and to_abs_path(opts.from_path) or target.path
+  local to_path = opts.to_path and to_abs_path(opts.to_path) or target.path
+
+  local repo_root = git.find_repo_root(from_path)
+  if not repo_root then
+    util.notify("File is outside a Git repository", vim.log.levels.WARN)
+    return
+  end
+
+  local right_repo_root = git.find_repo_root(to_path)
+  if not right_repo_root then
+    util.notify("File is outside a Git repository", vim.log.levels.WARN)
+    return
+  end
+
+  if right_repo_root ~= repo_root then
+    util.notify("Both compare paths must be inside the same Git repository", vim.log.levels.WARN)
+    return
+  end
+
+  if not git.ref_exists(repo_root, from_ref) then
+    util.notify("Unknown Git ref: " .. from_ref, vim.log.levels.WARN)
+    return
+  end
+
+  if not git.ref_exists(repo_root, to_ref) then
+    util.notify("Unknown Git ref: " .. to_ref, vim.log.levels.WARN)
+    return
+  end
+
+  local left_base, left_err = git.get_base(from_path, from_ref, {
+    force_ref_read = true,
+  })
+  if not left_base then
+    util.notify(left_err or "Unable to read left ref", vim.log.levels.ERROR)
+    return
+  end
+
+  local right_base, right_err = git.get_base(to_path, to_ref, {
+    force_ref_read = true,
+  })
+  if not right_base then
+    util.notify(right_err or "Unable to read right ref", vim.log.levels.ERROR)
+    return
+  end
+
+  if config.get().diffview.open_in_tab == false and M.is_active() then
+    M.close()
+  end
+
+  local opened_diff_tab = false
+  if config.get().diffview.open_in_tab then
+    vim.cmd("tabnew")
+    opened_diff_tab = true
+  end
+
+  local current_tab = vim.api.nvim_get_current_tabpage()
+  set_tab_var(current_tab, DIFF_OWNED_TAB_VAR, opened_diff_tab)
+
+  local left_filetype = infer_filetype(from_path)
+  local right_filetype = target.filetype or infer_filetype(to_path)
+  if not left_filetype or left_filetype == "" then
+    left_filetype = right_filetype
+  end
+  if not right_filetype or right_filetype == "" then
+    right_filetype = left_filetype
+  end
+
+  local left_win = vim.api.nvim_get_current_win()
+  local left_buf = create_ref_buffer(from_path, left_base.lines, from_ref, left_filetype)
+  vim.b[left_buf].gitdx_diff_base = true
+  local ok_left, left_err = set_window_buffer(left_win, left_buf)
+  if not ok_left then
+    util.notify("Unable to open left diff pane (" .. tostring(left_err) .. ")", vim.log.levels.ERROR)
+    return
+  end
+
+  -- Keep semantic layout stable: first ref on the left, second ref on the right,
+  -- regardless of user 'splitright' setting.
+  vim.cmd("rightbelow vsplit")
+
+  local right_win = vim.api.nvim_get_current_win()
+  local right_buf = create_ref_buffer(to_path, right_base.lines, to_ref, right_filetype)
+  local ok_right, right_err = set_window_buffer(right_win, right_buf)
+  if not ok_right then
+    util.notify("Unable to open right diff pane (" .. tostring(right_err) .. ")", vim.log.levels.ERROR)
+    return
+  end
+
+  local right_line_count = vim.api.nvim_buf_line_count(right_buf)
+  local target_line = 1
+  local target_col = 0
+  if type(target.cursor) == "table" then
+    target_line = math.max(1, tonumber(target.cursor[1]) or 1)
+    target_col = math.max(0, tonumber(target.cursor[2]) or 0)
+  end
+  target_line = math.min(target_line, math.max(1, right_line_count))
+  pcall(vim.api.nvim_win_set_cursor, right_win, { target_line, target_col })
+
+  vim.b[right_buf].gitdx_diff_source = true
+
+  ensure_hiddenoff_diffopt()
+  apply_diff_window_style(left_win)
+  apply_diff_window_style(right_win)
+  register_horizontal_sync(left_win, right_win)
+
+  set_tab_var(current_tab, DIFF_STATE_TAB_VAR, {
+    left_win = left_win,
+    right_win = right_win,
+    left_buf = left_buf,
+    source_buf = right_buf,
+    source_path = to_path,
+    ref = from_ref,
+    right_ref = to_ref,
   })
   block_explore_commands_for_state(get_diff_state(current_tab))
 
@@ -631,6 +1094,52 @@ function M.is_active(tabpage)
   return tab_has_active_diff(target_tab)
 end
 
+function M.get_hunks(tabpage)
+  local target_tab = tabpage
+  if not target_tab or target_tab == 0 then
+    target_tab = vim.api.nvim_get_current_tabpage()
+  end
+
+  if not vim.api.nvim_tabpage_is_valid(target_tab) then
+    return nil, "Invalid tabpage"
+  end
+
+  local state = get_diff_state(target_tab)
+  local left_buf, right_buf, resolve_err = resolve_diff_buffers_from_state(target_tab, state)
+  if not left_buf then
+    return nil, resolve_err
+  end
+
+  local left_lines = vim.api.nvim_buf_get_lines(left_buf, 0, -1, false)
+  local right_lines = vim.api.nvim_buf_get_lines(right_buf, 0, -1, false)
+  local hunks = git.compute_hunks(left_lines, right_lines)
+  local stats = build_stats_from_hunks(hunks)
+
+  local path = type(state) == "table" and state.source_path or nil
+  if not path or path == "" then
+    path = resolve_source_path_from_buffer(right_buf)
+  end
+  if not path or path == "" then
+    path = resolve_source_path_from_buffer(left_buf)
+  end
+
+  if not path or path == "" then
+    return nil, "Unable to resolve source file for GitDx diff view"
+  end
+
+  local repo_root = git.find_repo_root(path)
+  local info = {
+    path = path,
+    relpath = relpath(repo_root, path),
+    repo_root = repo_root,
+    ref = type(state) == "table" and state.ref or nil,
+    right_ref = type(state) == "table" and state.right_ref or nil,
+    mode = (type(state) == "table" and state.right_ref) and "refs" or "working",
+  }
+
+  return vim.deepcopy(hunks), vim.deepcopy(stats), info
+end
+
 function M.close()
   local current_tab = vim.api.nvim_get_current_tabpage()
   local state = get_diff_state(current_tab)
@@ -640,6 +1149,7 @@ function M.close()
     unblock_explore_commands_for_state(state)
     local ok, err = pcall(vim.cmd, "tabclose")
     if ok then
+      maybe_restore_hiddenoff_diffopt()
       return
     end
 
@@ -676,6 +1186,7 @@ function M.close()
   del_tab_var(current_tab, DIFF_OWNED_TAB_VAR)
   del_tab_var(current_tab, DIFF_STATE_TAB_VAR)
 
+  maybe_restore_hiddenoff_diffopt()
   sync_live_window_decorations()
 end
 
