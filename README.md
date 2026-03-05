@@ -68,7 +68,7 @@ After installation, the plugin auto-initializes.
    - `|` for added
    - `~` for changed
    - `_` for deleted
-4. Indicators and GitDx winbar summary are shown only for files inside a Git repository.
+4. Indicators and GitDx winbar summary are shown only for files inside a Git repository and not ignored by `.gitignore`.
 
 ## Commands
 
@@ -273,6 +273,7 @@ vim.keymap.set("n", "<leader>gt", "<cmd>GitDxToggle<cr>", { desc = "GitDx: Toggl
 
 - No signs visible:
   - Ensure file is inside a Git repository
+  - Ignored files (matched by `.gitignore`) are intentionally skipped by live indicators
   - Run `:GitDxRefresh`
 - `:GitDxDiff` does not open:
   - File must exist on disk

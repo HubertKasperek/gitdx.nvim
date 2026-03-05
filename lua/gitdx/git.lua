@@ -106,6 +106,25 @@ function M.is_tracked(repo_root, relative_path)
   return code == 0
 end
 
+function M.is_ignored(repo_root, relative_path)
+  if type(repo_root) ~= "string" or repo_root == "" then
+    return false
+  end
+
+  if type(relative_path) ~= "string" or util.trim(relative_path) == "" then
+    return false
+  end
+
+  local code = run_git(repo_root, {
+    "check-ignore",
+    "--quiet",
+    "--",
+    relative_path,
+  })
+
+  return code == 0
+end
+
 function M.read_file_at_ref(repo_root, relative_path, ref)
   local object = string.format("%s:%s", ref, relative_path)
   local code, stdout = run_git(repo_root, { "--no-pager", "show", object })
@@ -130,6 +149,15 @@ function M.get_base(path, ref, opts)
 
   local lines = {}
   local tracked = M.is_tracked(root, relative_path)
+  local ignored = false
+  if not tracked and not opts.force_ref_read then
+    ignored = M.is_ignored(root, relative_path)
+  end
+
+  if ignored then
+    return nil, "File is ignored by Git (.gitignore)"
+  end
+
   if tracked or opts.force_ref_read then
     lines = M.read_file_at_ref(root, relative_path, ref)
   end
