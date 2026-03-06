@@ -861,6 +861,187 @@ local function get_edit_target(tabpage)
   }
 end
 
+local function hunk_target_line(hunk, source_line_count)
+  local line = math.max(1, tonumber(hunk and hunk.start_new) or 1)
+  if source_line_count and source_line_count > 0 then
+    line = math.min(line, source_line_count)
+  end
+  return line
+end
+
+local function buffer_has_normal_mapping(buf, lhs)
+  if not buf or buf <= 0 or not vim.api.nvim_buf_is_valid(buf) then
+    return false
+  end
+
+  local ok, maps = pcall(vim.api.nvim_buf_get_keymap, buf, "n")
+  if not ok or type(maps) ~= "table" then
+    return false
+  end
+
+  for _, map in ipairs(maps) do
+    if map.lhs == lhs then
+      return true
+    end
+  end
+
+  return false
+end
+
+local function clear_navigation_keymaps_for_state(state)
+  if type(state) ~= "table" then
+    return
+  end
+
+  local navigation_keymaps = state.navigation_keymaps
+  if type(navigation_keymaps) ~= "table" then
+    return
+  end
+
+  for buf_key, lhs_list in pairs(navigation_keymaps) do
+    local buf = tonumber(buf_key)
+    if buf and buf > 0 and vim.api.nvim_buf_is_valid(buf) and type(lhs_list) == "table" then
+      for _, lhs in ipairs(lhs_list) do
+        pcall(vim.keymap.del, "n", lhs, { buffer = buf })
+      end
+    end
+  end
+
+  state.navigation_keymaps = nil
+end
+
+local function attach_navigation_keymaps_for_state(state)
+  if type(state) ~= "table" then
+    return
+  end
+
+  clear_navigation_keymaps_for_state(state)
+
+  local targets = {}
+  local seen = {}
+  for _, key in ipairs({ "left_buf", "source_buf" }) do
+    local buf = tonumber(state[key])
+    if buf and buf > 0 and vim.api.nvim_buf_is_valid(buf) and not seen[buf] then
+      seen[buf] = true
+      table.insert(targets, buf)
+    end
+  end
+
+  local created = {}
+  for _, buf in ipairs(targets) do
+    local created_lhs = {}
+    local function map(lhs, rhs, desc)
+      if buffer_has_normal_mapping(buf, lhs) then
+        return
+      end
+
+      vim.keymap.set("n", lhs, rhs, {
+        buffer = buf,
+        silent = true,
+        nowait = true,
+        desc = desc,
+      })
+      table.insert(created_lhs, lhs)
+    end
+
+    map("n", M.jump_next_hunk, "GitDxDiff next change")
+    map("N", M.jump_prev_hunk, "GitDxDiff previous change")
+    map("]g", M.jump_next_hunk, "GitDxDiff next change (alt)")
+    map("[g", M.jump_prev_hunk, "GitDxDiff previous change (alt)")
+
+    if #created_lhs > 0 then
+      created[tostring(buf)] = created_lhs
+    end
+  end
+
+  state.navigation_keymaps = created
+end
+
+local function select_hunk_index(target_lines, current_line, direction)
+  if direction > 0 then
+    for idx, line in ipairs(target_lines) do
+      if line > current_line then
+        return idx, false
+      end
+    end
+    return 1, true
+  end
+
+  for idx = #target_lines, 1, -1 do
+    if target_lines[idx] < current_line then
+      return idx, false
+    end
+  end
+
+  return #target_lines, true
+end
+
+local function jump_hunk(direction)
+  local tabpage = vim.api.nvim_get_current_tabpage()
+  if not M.is_active(tabpage) then
+    util.notify("No active GitDx diff view in current tab", vim.log.levels.WARN)
+    return false
+  end
+
+  local state = get_diff_state(tabpage)
+  local source_win = resolve_source_window(tabpage, state)
+  if not source_win or not vim.api.nvim_win_is_valid(source_win) then
+    util.notify("Unable to resolve source window for GitDx diff view", vim.log.levels.WARN)
+    return false
+  end
+
+  local source_buf = vim.api.nvim_win_get_buf(source_win)
+  if not source_buf or source_buf <= 0 or not vim.api.nvim_buf_is_valid(source_buf) then
+    util.notify("Unable to resolve source buffer for GitDx diff view", vim.log.levels.WARN)
+    return false
+  end
+
+  local source_line_count = vim.api.nvim_buf_line_count(source_buf)
+  local hunks, err = M.get_hunks(tabpage)
+  if not hunks then
+    util.notify(err or "Unable to compute changed line ranges", vim.log.levels.WARN)
+    return false
+  end
+
+  if #hunks == 0 then
+    util.notify("GitDxDiff: no changes to navigate")
+    return false
+  end
+
+  local target_lines = {}
+  for index, hunk in ipairs(hunks) do
+    target_lines[index] = hunk_target_line(hunk, source_line_count)
+  end
+
+  local current_line = vim.api.nvim_win_get_cursor(source_win)[1]
+  local index, wrapped = select_hunk_index(target_lines, current_line, direction)
+  if not index then
+    return false
+  end
+
+  local target_line = target_lines[index]
+  pcall(vim.api.nvim_set_current_win, source_win)
+  pcall(vim.api.nvim_win_set_cursor, source_win, { target_line, 0 })
+  pcall(vim.api.nvim_win_call, source_win, function()
+    vim.cmd("normal! zv")
+  end)
+
+  local wrap_suffix = wrapped and " (wrap)" or ""
+  vim.api.nvim_echo({
+    { string.format("GitDxDiff change %d/%d%s", index, #hunks, wrap_suffix), "ModeMsg" },
+  }, false, {})
+
+  return true
+end
+
+function M.jump_next_hunk()
+  return jump_hunk(1)
+end
+
+function M.jump_prev_hunk()
+  return jump_hunk(-1)
+end
+
 function M.open(opts)
   opts = opts or {}
   local source_buf, source_path, err, cursor = resolve_source(opts)
@@ -920,15 +1101,17 @@ function M.open(opts)
   apply_diff_window_style(right_win)
   register_horizontal_sync(left_win, right_win)
 
-  set_tab_var(current_tab, DIFF_STATE_TAB_VAR, {
+  local state = {
     left_win = left_win,
     right_win = right_win,
     left_buf = left_buf,
     source_buf = source_buf,
     source_path = source_path,
     ref = ref,
-  })
-  block_explore_commands_for_state(get_diff_state(current_tab))
+  }
+  block_explore_commands_for_state(state)
+  attach_navigation_keymaps_for_state(state)
+  set_tab_var(current_tab, DIFF_STATE_TAB_VAR, state)
 
   if config.get().diffview.keep_focus == "left" then
     vim.api.nvim_set_current_win(left_win)
@@ -1061,7 +1244,7 @@ function M.open_between_refs(opts)
   apply_diff_window_style(right_win)
   register_horizontal_sync(left_win, right_win)
 
-  set_tab_var(current_tab, DIFF_STATE_TAB_VAR, {
+  local state = {
     left_win = left_win,
     right_win = right_win,
     left_buf = left_buf,
@@ -1069,8 +1252,10 @@ function M.open_between_refs(opts)
     source_path = to_path,
     ref = from_ref,
     right_ref = to_ref,
-  })
-  block_explore_commands_for_state(get_diff_state(current_tab))
+  }
+  block_explore_commands_for_state(state)
+  attach_navigation_keymaps_for_state(state)
+  set_tab_var(current_tab, DIFF_STATE_TAB_VAR, state)
 
   if config.get().diffview.keep_focus == "left" then
     vim.api.nvim_set_current_win(left_win)
@@ -1144,6 +1329,8 @@ function M.close()
   local current_tab = vim.api.nvim_get_current_tabpage()
   local state = get_diff_state(current_tab)
   local owns_tab = get_tab_var(current_tab, DIFF_OWNED_TAB_VAR) == true
+
+  clear_navigation_keymaps_for_state(state)
 
   if owns_tab then
     unblock_explore_commands_for_state(state)

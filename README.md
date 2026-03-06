@@ -7,6 +7,7 @@ A Neovim plugin focused on developer experience:
 - Live change summary badge in `winbar` (`+A ~M -D`)
 - Changes panel (`:GitDx`) with changed/added/deleted/renamed/conflict files
 - Refs compare panel via `:GitDx <from_ref> [to_ref]`
+- Optional explicit root path for panel via `:GitDx <path>` / `:GitDxEx <path>`
 - Side-by-side diff view:
   - file at `HEAD` (before changes)
   - current buffer (after changes)
@@ -68,7 +69,7 @@ After installation, the plugin auto-initializes.
    - `|` for added
    - `~` for changed
    - `_` for deleted
-4. Indicators and GitDx winbar summary are shown only for files inside a Git repository.
+4. Indicators and GitDx winbar summary are shown only for files inside a Git repository and not ignored by `.gitignore`.
 
 ## Commands
 
@@ -78,27 +79,41 @@ After installation, the plugin auto-initializes.
   - `:GitDxDiff <ref>` opens working tree vs `<ref>`
   - `:GitDxDiff <from_ref> <to_ref>` opens refs compare for current file
   - `:GitDxDiff <from_ref> <to_ref> <path>` opens refs compare for explicit file path
+  - In active diff: `n` / `N` jump next/prev change (with wrap), echoing position as `X/Y`
+  - Alternative non-colliding keys: `]g` / `[g` (same behavior)
   - Locks both diff panes against accidental buffer replacement
   - Blocks `:Ex` / `:Explore` while diff is active to keep layout stable
   - Automatically shows `GitDx +A ~M -D` stats after opening
   - Examples: `:GitDxDiff`, `:GitDxDiff HEAD~1`, `:GitDxDiff HEAD~5 HEAD`, `:GitDxDiff v1.0.0 v1.1.0 lua/gitdx/diffview.lua`
-- `:GitDx [from_ref] [to_ref]`
+- `:GitDx [path]` or `:GitDx [from_ref] [to_ref]`
   - `:GitDx` opens/focuses the working-tree panel (same as before)
+  - `:GitDx <path>` opens working-tree mode for that path (repo root or workspace directory with nested repos)
   - `:GitDx <from_ref>` opens refs compare panel for `<from_ref> -> HEAD`
   - `:GitDx <from_ref> <to_ref>` opens refs compare panel for explicit range
+  - If a single argument matches both an existing path and a valid ref in current repo, it is treated as ref; use `./path` or absolute path to force path mode
+  - In working-tree mode, when current directory is outside a Git repo but descendant folders contain repos, changes are grouped by repository
+  - `:GitDx` keeps default side from `panel.split`; use `:GitDxRight` to force right side
   - Unavailable while `:GitDxDiff` is active in the current tab (to avoid UI conflicts)
   - Shows conflict files with `U` status and conflict highlighting in working-tree mode
   - Panel actions: `Enter` or mouse click (open diff / open conflict file), `r` (refresh), `q` (close)
   - Opening diff from panel (`Enter` / click) also shows `GitDx +A ~M -D` stats automatically
-- `:GitDxEx [from_ref] [to_ref]`
+- `:GitDxRight [path]` or `:GitDxRight [from_ref] [to_ref]`
+  - Same behavior as `:GitDx`, but always opens panel on the right side
+- `:GitDxEx [path]` or `:GitDxEx [from_ref] [to_ref]`
   - Same behavior as `:GitDx`, but opens panel in current window (like `:Ex` or `:Explore`)
+  - Includes the same multi-repository working-tree grouping behavior as `:GitDx`
   - Keeps split-panel behavior unchanged for plain `:GitDx`
   - Panel buffer is locked to prevent accidental replacement
+  - Panel state is tab-local; each tab can keep its own GitDx panel independently
 - `:GitDxPanelClose`
   - Close GitDx changes panel (shows warning if panel is not open)
 - `:GitDxDiffClose`
   - If diff was opened in a dedicated tab, close that tab
   - Otherwise close diff mode in the current tab and close the plugin base buffer
+- `:GitDxDiffNext`
+  - Jump to next change in active `:GitDxDiff` view (with wrap)
+- `:GitDxDiffPrev`
+  - Jump to previous change in active `:GitDxDiff` view (with wrap)
 - `:GitDxDiffEdit`
   - Close active `:GitDxDiff` view and open the source file in a new tab
   - Preserves cursor line from the diff source window
@@ -255,6 +270,7 @@ vim.keymap.set("n", "<leader>gd", "<cmd>GitDxDiff<cr>", { desc = "GitDx: Diff sp
 vim.keymap.set("n", "<leader>gD", "<cmd>GitDxDiffClose<cr>", { desc = "GitDx: Close diff" })
 vim.keymap.set("n", "<leader>ge", "<cmd>GitDxDiffEdit<cr>", { desc = "GitDx: Close diff and edit file" })
 vim.keymap.set("n", "<leader>gs", "<cmd>GitDx<cr>", { desc = "GitDx: Source control panel" })
+vim.keymap.set("n", "<leader>gR", "<cmd>GitDxRight<cr>", { desc = "GitDx: Source control panel (right)" })
 vim.keymap.set("n", "<leader>gS", "<cmd>GitDxEx<cr>", { desc = "GitDx: Source control panel (current window)" })
 vim.keymap.set("n", "<leader>gc", "<cmd>GitDxConflictRanges<cr>", { desc = "GitDx: Conflict ranges" })
 vim.keymap.set("n", "<leader>gr", "<cmd>GitDxRefresh<cr>", { desc = "GitDx: Refresh" })
@@ -273,6 +289,7 @@ vim.keymap.set("n", "<leader>gt", "<cmd>GitDxToggle<cr>", { desc = "GitDx: Toggl
 
 - No signs visible:
   - Ensure file is inside a Git repository
+  - Ignored files (matched by `.gitignore`) are intentionally skipped by live indicators
   - Run `:GitDxRefresh`
 - `:GitDxDiff` does not open:
   - File must exist on disk

@@ -1,6 +1,7 @@
 local config = require("gitdx.config")
 local conflicts = require("gitdx.conflicts")
 local diffview = require("gitdx.diffview")
+local git = require("gitdx.git")
 local highlights = require("gitdx.highlights")
 local live = require("gitdx.live")
 local panel = require("gitdx.panel")
@@ -267,36 +268,109 @@ local function notify_active_diff_stats()
   return false
 end
 
+local function path_exists(path)
+  local target = util.trim(path)
+  if target == "" then
+    return false
+  end
+
+  local resolved = vim.fn.fnamemodify(target, ":p")
+  if resolved == "" then
+    return false
+  end
+
+  local uv = vim.uv or vim.loop
+  return uv.fs_stat(resolved) ~= nil
+end
+
+local function looks_like_path(value)
+  if value:find("[/\\]") then
+    return true
+  end
+
+  local first = value:sub(1, 1)
+  if first == "." or first == "~" then
+    return true
+  end
+
+  return value:match("^%a:[/\\]") ~= nil
+end
+
+local function current_ref_resolution_repo()
+  local probe_path = vim.api.nvim_buf_get_name(0)
+  if probe_path == "" then
+    probe_path = vim.fn.getcwd()
+  end
+
+  return git.find_repo_root_from(probe_path)
+end
+
+local function should_treat_single_arg_as_path(arg)
+  local exists = path_exists(arg)
+  if not exists then
+    return false
+  end
+
+  if looks_like_path(arg) then
+    return true
+  end
+
+  local repo_root = current_ref_resolution_repo()
+  if repo_root and git.ref_exists(repo_root, arg) then
+    return false
+  end
+
+  return true
+end
+
 local function open_panel_with_optional_refs(opts, open_in_current_window)
   local fargs = opts.fargs or {}
   local argc = #fargs
   local command_name = open_in_current_window and "GitDxEx" or "GitDx"
+  local split = opts.split
+  local usage = string.format("Usage: :%s [path] OR :%s [from_ref] [to_ref]", command_name, command_name)
+  local usage_refs = string.format("Usage: :%s [from_ref] [to_ref]", command_name)
+
+  local function open_working_panel(path)
+    if open_in_current_window then
+      panel.open_in_current_window(path)
+      return
+    end
+
+    panel.open({
+      split = split,
+      path = path,
+    })
+  end
 
   if argc == 0 then
-    if open_in_current_window then
-      panel.open_in_current_window()
-    else
-      panel.open()
-    end
+    open_working_panel(nil)
     return
   end
 
   if argc > 2 then
-    util.notify(string.format("Usage: :%s [from_ref] [to_ref]", command_name), vim.log.levels.WARN)
+    util.notify(usage, vim.log.levels.WARN)
     return
   end
 
-  local from_ref = util.trim(fargs[1] or "")
-  if from_ref == "" then
-    util.notify(string.format("Usage: :%s [from_ref] [to_ref]", command_name), vim.log.levels.WARN)
+  local first_arg = util.trim(fargs[1] or "")
+  if first_arg == "" then
+    util.notify(usage, vim.log.levels.WARN)
     return
   end
+
+  if argc == 1 and should_treat_single_arg_as_path(first_arg) then
+    open_working_panel(first_arg)
+    return
+  end
+
+  local from_ref = first_arg
 
   local to_ref = "HEAD"
   if argc == 2 then
     to_ref = util.trim(fargs[2] or "")
     if to_ref == "" then
-      util.notify(string.format("Usage: :%s [from_ref] [to_ref]", command_name), vim.log.levels.WARN)
+      util.notify(usage_refs, vim.log.levels.WARN)
       return
     end
   end
@@ -305,6 +379,7 @@ local function open_panel_with_optional_refs(opts, open_in_current_window)
   open_refs({
     from_ref = from_ref,
     to_ref = to_ref,
+    split = split,
   })
 end
 
@@ -370,6 +445,20 @@ local function register_commands()
     desc = "Close gitdx diff view in current tab",
   })
 
+  vim.api.nvim_create_user_command("GitDxDiffNext", function()
+    ensure_setup()
+    diffview.jump_next_hunk()
+  end, {
+    desc = "Jump to next change in active GitDxDiff view (wraps)",
+  })
+
+  vim.api.nvim_create_user_command("GitDxDiffPrev", function()
+    ensure_setup()
+    diffview.jump_prev_hunk()
+  end, {
+    desc = "Jump to previous change in active GitDxDiff view (wraps)",
+  })
+
   vim.api.nvim_create_user_command("GitDxDiffEdit", function()
     ensure_setup()
     diffview.close_and_edit()
@@ -392,7 +481,16 @@ local function register_commands()
     open_panel_with_optional_refs(opts, false)
   end, {
     nargs = "*",
-    desc = "Open GitDx panel (working tree or refs compare)",
+    desc = "Open GitDx panel (working tree/path or refs compare)",
+  })
+
+  vim.api.nvim_create_user_command("GitDxRight", function(opts)
+    ensure_setup()
+    local params = vim.tbl_extend("force", opts, { split = "right" })
+    open_panel_with_optional_refs(params, false)
+  end, {
+    nargs = "*",
+    desc = "Open GitDx panel on the right (working tree/path or refs compare)",
   })
 
   vim.api.nvim_create_user_command("GitDxEx", function(opts)
@@ -400,7 +498,7 @@ local function register_commands()
     open_panel_with_optional_refs(opts, true)
   end, {
     nargs = "*",
-    desc = "Open GitDx panel in current window (working tree or refs compare)",
+    desc = "Open GitDx panel in current window (working tree/path or refs compare)",
   })
 
   vim.api.nvim_create_user_command("GitDxStats", function()
@@ -674,6 +772,16 @@ function M.close_diff_and_edit()
   diffview.close_and_edit()
 end
 
+function M.diff_next_change()
+  ensure_setup()
+  return diffview.jump_next_hunk()
+end
+
+function M.diff_prev_change()
+  ensure_setup()
+  return diffview.jump_prev_hunk()
+end
+
 function M.toggle()
   ensure_setup()
   return live.toggle()
@@ -689,16 +797,22 @@ function M.toggle_winbar()
   return live.toggle_winbar_summary()
 end
 
-function M.open_panel()
+function M.open_panel(path)
   ensure_setup()
-  panel.open()
+  panel.open({ path = path })
 end
 
-function M.open_panel_refs(from_ref, to_ref, open_in_current_window)
+function M.open_panel_right(path)
+  ensure_setup()
+  panel.open({ split = "right", path = path })
+end
+
+function M.open_panel_refs(from_ref, to_ref, open_in_current_window, path)
   ensure_setup()
   local opts = {
     from_ref = from_ref,
     to_ref = to_ref,
+    path = path,
   }
 
   if open_in_current_window then
@@ -706,6 +820,16 @@ function M.open_panel_refs(from_ref, to_ref, open_in_current_window)
   else
     panel.open_refs(opts)
   end
+end
+
+function M.get_session_state()
+  ensure_setup()
+  return panel.get_session_state()
+end
+
+function M.apply_session_state(snapshot)
+  ensure_setup()
+  return panel.apply_session_state(snapshot)
 end
 
 function M.is_setup()
