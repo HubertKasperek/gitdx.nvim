@@ -7,46 +7,95 @@ local util = require("gitdx.util")
 local M = {}
 
 local namespace = vim.api.nvim_create_namespace("gitdx_panel")
-local state = {
-  bufnr = nil,
-  winid = nil,
-  repo_root = nil,
-  mode = "working",
-  from_ref = nil,
-  to_ref = nil,
-  line_map = {},
-  open_style = nil,
-  previous_bufnr = nil,
-  previous_winfixbuf = nil,
-  lock_group = nil,
-  allow_window_replace = false,
-  lock_guard = false,
-}
+local function new_state()
+  return {
+    bufnr = nil,
+    winid = nil,
+    repo_root = nil,
+    mode = "working",
+    from_ref = nil,
+    to_ref = nil,
+    line_map = {},
+    open_style = nil,
+    split = nil,
+    previous_bufnr = nil,
+    previous_winfixbuf = nil,
+    lock_group = nil,
+    allow_window_replace = false,
+    lock_guard = false,
+  }
+end
+
+local state_by_tab = {}
+local state = new_state()
+
+local function current_tab()
+  return vim.api.nvim_get_current_tabpage()
+end
+
+local function use_tab_state(tabpage)
+  for existing_tab, _ in pairs(state_by_tab) do
+    if not vim.api.nvim_tabpage_is_valid(existing_tab) then
+      state_by_tab[existing_tab] = nil
+    end
+  end
+
+  if not tabpage or not vim.api.nvim_tabpage_is_valid(tabpage) then
+    state = new_state()
+    return state
+  end
+
+  local tab_state = state_by_tab[tabpage]
+  if not tab_state then
+    tab_state = new_state()
+    state_by_tab[tabpage] = tab_state
+  end
+  state = tab_state
+  return state
+end
+
+local function use_current_tab_state()
+  return use_tab_state(current_tab())
+end
+
+local function reset_state_table(target)
+  if target.lock_group then
+    pcall(vim.api.nvim_del_augroup_by_id, target.lock_group)
+  end
+  local fresh = new_state()
+  for key, _ in pairs(target) do
+    target[key] = nil
+  end
+  for key, value in pairs(fresh) do
+    target[key] = value
+  end
+  return target
+end
 
 local function panel_is_open()
-  return state.bufnr
+  if not state.bufnr or not state.winid then
+    return false
+  end
+
+  local is_open = state.bufnr
     and vim.api.nvim_buf_is_valid(state.bufnr)
     and state.winid
     and vim.api.nvim_win_is_valid(state.winid)
+  if not is_open then
+    reset_state_table(state)
+  end
+  return is_open
 end
 
 local function clear_state()
-  state.bufnr = nil
-  state.winid = nil
-  state.repo_root = nil
-  state.mode = "working"
-  state.from_ref = nil
-  state.to_ref = nil
-  state.line_map = {}
-  state.open_style = nil
-  state.previous_bufnr = nil
-  state.previous_winfixbuf = nil
-  if state.lock_group then
-    pcall(vim.api.nvim_del_augroup_by_id, state.lock_group)
-    state.lock_group = nil
+  local tabpage = current_tab()
+  if tabpage and vim.api.nvim_tabpage_is_valid(tabpage) and state_by_tab[tabpage] then
+    reset_state_table(state_by_tab[tabpage])
+    state = state_by_tab[tabpage]
+    return
   end
-  state.allow_window_replace = false
-  state.lock_guard = false
+
+  state = reset_state_table(state)
 end
 
 local function status_group(status)
@@ -94,12 +143,10 @@ local function common_prefix_len(a, b)
   return i - 1
 end
 
-local function render_entries(entries)
-  local lines = {}
-  local highlights = {}
-  local line_map = {}
+local function append_tree_entries(lines, highlights, line_map, entries, indent_offset)
   local path_hl = "GitDxPanelPath"
   local current_dirs = {}
+  indent_offset = tonumber(indent_offset) or 0
 
   for _, entry in ipairs(entries) do
     local parts = vim.split(entry.path, "/", { plain = true })
@@ -111,7 +158,7 @@ local function render_entries(entries)
 
     local shared = common_prefix_len(current_dirs, dirs)
     for i = shared + 1, #dirs do
-      local indent = string.rep("  ", i - 1)
+      local indent = string.rep("  ", indent_offset + i - 1)
       table.insert(lines, indent .. dirs[i] .. "/")
       table.insert(highlights, {
         lnum = #lines - 1,
@@ -122,7 +169,7 @@ local function render_entries(entries)
     end
     current_dirs = dirs
 
-    local file_indent = string.rep("  ", #dirs)
+    local file_indent = string.rep("  ", indent_offset + #dirs)
     local line = string.format("%s%s %s", file_indent, entry.status, filename)
     if entry.status == "U" then
       line = string.format("%s  [conflict]", line)
@@ -150,6 +197,52 @@ local function render_entries(entries)
       })
     end
   end
+end
+
+local function should_render_repo_groups(data)
+  if data.mode == "refs" then
+    return false
+  end
+
+  if type(data.repos) ~= "table" or #data.repos == 0 then
+    return false
+  end
+
+  local repo_count = tonumber(data.repo_count) or #data.repos
+  return repo_count > 1
+end
+
+local function render_entries(data)
+  local lines = {}
+  local highlights = {}
+  local line_map = {}
+  local path_hl = "GitDxPanelPath"
+
+  if should_render_repo_groups(data) then
+    for index, repo in ipairs(data.repos) do
+      local label = repo.relpath or repo.repo_root
+      if not label or label == "" then
+        label = vim.fn.fnamemodify(repo.repo_root or "", ":~")
+      end
+
+      table.insert(lines, string.format("[%s]", label))
+      table.insert(highlights, {
+        lnum = #lines - 1,
+        col_start = 0,
+        col_end = -1,
+        group = path_hl,
+      })
+
+      append_tree_entries(lines, highlights, line_map, repo.entries or {}, 1)
+      if index < #data.repos then
+        table.insert(lines, "")
+      end
+    end
+
+    return lines, highlights, line_map
+  end
+
+  append_tree_entries(lines, highlights, line_map, data.entries or {}, 0)
 
   return lines, highlights, line_map
 end
@@ -196,9 +289,15 @@ local function make_panel_header(data)
     }
   end
 
+  local repo_suffix = ""
+  local repo_count = tonumber(data.repo_count) or 0
+  if repo_count > 1 then
+    repo_suffix = string.format("  repos:%d", repo_count)
+  end
+
   return {
     string.format("GitDx Changes  %s", root_display),
-    string.format("A:%d  M:%d  D:%d  R:%d  U:%d", summary.A, summary.M, summary.D, summary.R, summary.U),
+    string.format("A:%d  M:%d  D:%d  R:%d  U:%d%s", summary.A, summary.M, summary.D, summary.R, summary.U, repo_suffix),
     "Enter/Click: diff (or conflict)    r: refresh    q: close",
     "",
   }
@@ -315,6 +414,7 @@ local function close_panel_window()
 end
 
 function M.close()
+  use_current_tab_state()
   state.allow_window_replace = true
   close_panel_window()
   clear_state()
@@ -338,8 +438,9 @@ local function open_current_entry_at_mouse()
   M.open_current_entry()
 end
 
-local function ensure_panel(open_style)
+local function ensure_panel(open_style, split)
   open_style = open_style == "current" and "current" or "split"
+  split = split == "right" and "right" or "left"
 
   if panel_is_open() then
     return state.bufnr, state.winid
@@ -356,7 +457,7 @@ local function ensure_panel(open_style)
   else
     local panel_opts = config.get().panel
     local cmd
-    if panel_opts.split == "right" then
+    if split == "right" then
       cmd = string.format("botright vertical %dnew", panel_opts.width)
     else
       cmd = string.format("topleft vertical %dnew", panel_opts.width)
@@ -407,17 +508,28 @@ local function ensure_panel(open_style)
     })
   end
 
+  local panel_tab = current_tab()
   vim.api.nvim_create_autocmd({ "BufWipeout", "BufDelete" }, {
     buffer = buf,
     callback = function()
-      restore_locked_panel_window()
-      clear_state()
+      local active_tab = current_tab()
+      local tab_state = state_by_tab[panel_tab]
+      if tab_state and tab_state.bufnr == buf then
+        state = tab_state
+        restore_locked_panel_window()
+        reset_state_table(tab_state)
+        if panel_tab == active_tab then
+          state = tab_state
+        end
+      end
+      use_tab_state(active_tab)
     end,
   })
 
   state.bufnr = buf
   state.winid = win
   state.open_style = open_style
+  state.split = split
   state.previous_bufnr = previous_bufnr
   state.previous_winfixbuf = previous_winfixbuf
   state.lock_group = vim.api.nvim_create_augroup(string.format("GitDxPanelLock_%d", buf), { clear = true })
@@ -425,15 +537,18 @@ local function ensure_panel(open_style)
   vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
     group = state.lock_group,
     callback = function()
+      local active_tab = current_tab()
+      use_tab_state(panel_tab)
       enforce_panel_window_buffer()
+      use_tab_state(active_tab)
     end,
   })
 
   return buf, win
 end
 
-local function render(data, open_style)
-  local buf, win = ensure_panel(open_style)
+local function render(data, open_style, split)
+  local buf, win = ensure_panel(open_style, split)
   state.repo_root = data.repo_root
   state.mode = normalize_mode(data.mode)
   state.from_ref = data.from_ref
@@ -441,7 +556,7 @@ local function render(data, open_style)
 
   local header = make_panel_header(data)
 
-  local body, body_hl, line_map = render_entries(data.entries)
+  local body, body_hl, line_map = render_entries(data)
   if #body == 0 then
     body = { "Working tree clean" }
     body_hl = {
@@ -487,9 +602,16 @@ local function render(data, open_style)
 end
 
 function M.refresh(opts)
+  use_current_tab_state()
   opts = opts or {}
   local open_style = opts.open_style or state.open_style or "split"
+  local split = opts.split or state.split or config.get().panel.split or "left"
+  split = split == "right" and "right" or "left"
   local mode = normalize_mode(opts.mode or state.mode)
+  local target_path = util.trim(opts.path)
+  if target_path == "" then
+    target_path = panel_path()
+  end
 
   local data
   local err
@@ -501,14 +623,14 @@ function M.refresh(opts)
       return
     end
 
-    data, err = git.list_ref_changes(panel_path(), from_ref, to_ref)
+    data, err = git.list_ref_changes(target_path, from_ref, to_ref)
     if data then
       data.mode = "refs"
       data.from_ref = from_ref
       data.to_ref = to_ref
     end
   else
-    data, err = git.list_changes(panel_path())
+    data, err = git.list_changes(target_path)
     if data then
       data.mode = "working"
     end
@@ -519,12 +641,16 @@ function M.refresh(opts)
     return
   end
 
-  render(data, open_style)
+  render(data, open_style, split)
 end
 
 function M.open(opts)
+  use_current_tab_state()
   opts = opts or {}
   local open_style = opts.open_style or "split"
+  local split = opts.split or state.split or config.get().panel.split or "left"
+  split = split == "right" and "right" or "left"
+  local path = util.trim(opts.path)
 
   if diffview.is_active() then
     util.notify(
@@ -538,14 +664,18 @@ function M.open(opts)
     M.close()
   end
 
+  if panel_is_open() and state.split ~= split then
+    M.close()
+  end
+
   if panel_is_open() then
     if state.mode ~= "working" then
       M.close()
-      M.refresh({ open_style = open_style, mode = "working" })
+      M.refresh({ open_style = open_style, split = split, mode = "working", path = path })
       return
     end
 
-    M.refresh({ mode = "working" })
+    M.refresh({ mode = "working", split = split, path = path })
     if vim.api.nvim_win_is_valid(state.winid) then
       vim.api.nvim_set_current_win(state.winid)
     end
@@ -554,19 +684,26 @@ function M.open(opts)
 
   M.refresh({
     open_style = open_style,
+    split = split,
     mode = "working",
+    path = path,
   })
 end
 
-function M.open_in_current_window()
-  M.open({ open_style = "current" })
+function M.open_in_current_window(path)
+  use_current_tab_state()
+  M.open({ open_style = "current", path = path })
 end
 
 function M.open_refs(opts)
+  use_current_tab_state()
   opts = opts or {}
   local open_style = opts.open_style or "split"
+  local split = opts.split or state.split or config.get().panel.split or "left"
+  split = split == "right" and "right" or "left"
   local from_ref = util.trim(opts.from_ref)
   local to_ref = util.trim(opts.to_ref)
+  local path = util.trim(opts.path)
 
   if from_ref == "" or to_ref == "" then
     util.notify("Usage: <from_ref> <to_ref>", vim.log.levels.WARN)
@@ -585,22 +722,30 @@ function M.open_refs(opts)
     M.close()
   end
 
+  if panel_is_open() and state.split ~= split then
+    M.close()
+  end
+
   if panel_is_open() then
     if state.mode ~= "refs" or state.from_ref ~= from_ref or state.to_ref ~= to_ref then
       M.close()
       M.refresh({
         open_style = open_style,
+        split = split,
         mode = "refs",
         from_ref = from_ref,
         to_ref = to_ref,
+        path = path,
       })
       return
     end
 
     M.refresh({
       mode = "refs",
+      split = split,
       from_ref = from_ref,
       to_ref = to_ref,
+      path = path,
     })
     if vim.api.nvim_win_is_valid(state.winid) then
       vim.api.nvim_set_current_win(state.winid)
@@ -610,20 +755,93 @@ function M.open_refs(opts)
 
   M.refresh({
     open_style = open_style,
+    split = split,
     mode = "refs",
     from_ref = from_ref,
     to_ref = to_ref,
+    path = path,
   })
 end
 
 function M.open_refs_in_current_window(opts)
+  use_current_tab_state()
   opts = opts or {}
   opts.open_style = "current"
   M.open_refs(opts)
 end
 
 function M.is_open()
+  use_current_tab_state()
   return panel_is_open()
+end
+
+function M.get_session_state()
+  local panels = {}
+  for tabpage, tab_state in pairs(state_by_tab) do
+    if vim.api.nvim_tabpage_is_valid(tabpage) then
+      local bufnr = tab_state.bufnr
+      local winid = tab_state.winid
+      if bufnr and winid and vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_win_is_valid(winid) then
+        if vim.api.nvim_win_get_buf(winid) == bufnr then
+          table.insert(panels, {
+            tabnr = vim.api.nvim_tabpage_get_number(tabpage),
+            open_style = tab_state.open_style == "current" and "current" or "split",
+            split = tab_state.split == "right" and "right" or "left",
+            mode = tab_state.mode == "refs" and "refs" or "working",
+            from_ref = tab_state.from_ref,
+            to_ref = tab_state.to_ref,
+          })
+        end
+      end
+    end
+  end
+  table.sort(panels, function(a, b)
+    return (a.tabnr or 0) < (b.tabnr or 0)
+  end)
+  return { panels = panels }
+end
+
+function M.apply_session_state(snapshot)
+  if type(snapshot) ~= "table" then
+    return false
+  end
+  local active_tab = current_tab()
+  local active_tabnr = vim.api.nvim_tabpage_is_valid(active_tab) and vim.api.nvim_tabpage_get_number(active_tab) or nil
+  local panels = snapshot.panels
+  if type(panels) ~= "table" then
+    panels = { snapshot }
+  end
+  table.sort(panels, function(a, b)
+    return (tonumber(a.tabnr) or 0) < (tonumber(b.tabnr) or 0)
+  end)
+  local max_tab = vim.fn.tabpagenr("$")
+  for _, item in ipairs(panels) do
+    local tabnr = tonumber(item.tabnr) or 0
+    if tabnr >= 1 and tabnr <= max_tab then
+      pcall(vim.cmd, string.format("%dtabnext", tabnr))
+      local open_style = item.open_style == "current" and "current" or "split"
+      local split = item.split == "right" and "right" or "left"
+      local mode = item.mode == "refs" and "refs" or "working"
+      if mode == "refs" and item.from_ref and item.to_ref then
+        M.open_refs({
+          open_style = open_style,
+          split = split,
+          from_ref = item.from_ref,
+          to_ref = item.to_ref,
+        })
+      else
+        M.open({
+          open_style = open_style,
+          split = split,
+        })
+      end
+    end
+  end
+  if active_tabnr then
+    pcall(vim.cmd, string.format("%dtabnext", active_tabnr))
+    use_tab_state(current_tab())
+  end
+  return true
 end
 
 local function open_conflict_entry(entry)
@@ -667,8 +885,9 @@ local function open_diff_entry(entry)
     path = entry.abs_path,
   }
 
-  if entry.status == "R" and entry.old_path and state.repo_root then
-    opts.base_path = state.repo_root .. "/" .. entry.old_path
+  local entry_repo_root = entry.repo_root or state.repo_root
+  if entry.status == "R" and entry.old_path and entry_repo_root then
+    opts.base_path = entry_repo_root .. "/" .. entry.old_path
   end
 
   diffview.open(opts)
@@ -691,8 +910,9 @@ local function open_ref_diff_entry(entry)
     path = entry.abs_path,
   }
 
-  if entry.status == "R" and entry.old_path and state.repo_root then
-    opts.from_path = state.repo_root .. "/" .. entry.old_path
+  local entry_repo_root = entry.repo_root or state.repo_root
+  if entry.status == "R" and entry.old_path and entry_repo_root then
+    opts.from_path = entry_repo_root .. "/" .. entry.old_path
     opts.to_path = entry.abs_path
   end
 
@@ -713,6 +933,7 @@ local function notify_opened_diff_stats()
 end
 
 function M.open_current_entry()
+  use_current_tab_state()
   if not panel_is_open() then
     return
   end

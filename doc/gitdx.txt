@@ -1,0 +1,421 @@
+*gitdx.txt*    gitdx.nvim reference    Last change: 2026-03-05
+
+===============================================================================
+CONTENTS                                                *gitdx-contents*
+
+1. Introduction ............................................. |gitdx-intro|
+2. Installation ............................................. |gitdx-install|
+3. Commands ................................................. |gitdx-commands|
+4. Configuration ............................................ |gitdx-config|
+5. Highlight Groups ......................................... |gitdx-highlights|
+6. Lua API ................................................. |gitdx-api|
+7. Notes and Constraints .................................... |gitdx-notes|
+
+===============================================================================
+INTRODUCTION                                                  *gitdx-intro*
+
+`gitdx.nvim` provides Git-aware editing feedback with low ceremony:
+
+- live signs for added/changed/deleted hunks
+- optional line highlights and deleted-line virtual hint
+- winbar summary: `GitDx +A ~M -D`
+- changes panel (working tree or ref compare)
+- side-by-side diff view (working tree/ref or ref/ref)
+- range pickers for hunks and unresolved conflicts
+
+Requirements:
+
+- Neovim >= 0.9
+- Git in PATH
+
+===============================================================================
+INSTALLATION                                                *gitdx-install*
+
+lazy.nvim >
+  {
+    "HubertKasperek/gitdx.nvim",
+    config = function()
+      require("gitdx").setup()
+    end,
+  }
+<
+
+packer.nvim >
+  use {
+    "HubertKasperek/gitdx.nvim",
+    config = function()
+      require("gitdx").setup()
+    end,
+  }
+<
+
+Manual (`pack/*/start`) >
+  git clone https://github.com/HubertKasperek/gitdx.nvim \
+    ~/.config/nvim/pack/plugins/start/gitdx.nvim
+<
+
+If setup is not called explicitly, the plugin auto-initializes with defaults.
+If `:h gitdx` does not resolve after manual install, run:
+  :helptags ~/.config/nvim/pack/plugins/start/gitdx.nvim/doc
+
+===============================================================================
+COMMANDS                                                  *gitdx-commands*
+
+:GitDx [path]  or  :GitDx [from_ref] [to_ref]                  *:GitDx*
+    Open/focus the changes panel.
+
+    No args:
+      working-tree mode (`git status` data)
+      If current directory is outside a Git repo but descendant folders
+      contain repos, changes are grouped by repository.
+
+    One arg:
+      if arg is an existing path, open working-tree mode for that path
+      otherwise compare `<from_ref> -> HEAD`
+
+      If arg is both an existing path and a valid ref in current repo, it is
+      treated as ref. Use `./path` (or absolute path) to force path mode.
+
+    Two args:
+      compare `<from_ref> -> <to_ref>`
+    Uses default side from `panel.split` (`left` or `right`).
+
+:GitDxRight [path]  or  :GitDxRight [from_ref] [to_ref]   *:GitDxRight*
+    Same as |:GitDx|, but always opens panel on the right side.
+
+:GitDxEx [path]  or  :GitDxEx [from_ref] [to_ref]            *:GitDxEx*
+    Same as |:GitDx|, but opens panel in current window.
+    Includes the same multi-repository working-tree grouping behavior.
+
+:GitDxPanelClose                                         *:GitDxPanelClose*
+    Close panel. Warns if panel is not open.
+
+:GitDxDiff [ref]  or  :GitDxDiff <from_ref> <to_ref> [path] *:GitDxDiff*
+    Open side-by-side diff.
+
+    No args:
+      working tree vs `HEAD` for current file
+
+    One arg (`ref`):
+      working tree vs `<ref>` for current file
+
+    Two args (`from_ref to_ref`):
+      compare refs for current file
+
+    Three args (`from_ref to_ref path`):
+      compare refs for explicit file path
+
+    Notes:
+    - left pane is base/from_ref, right pane is current/to_ref
+    - both panes are locked (`winfixbuf`) to avoid replacement
+    - `:Ex`/`:Explore` are blocked while GitDxDiff is active
+    - diff navigation:
+      `n` next change, `N` previous change (with wrap)
+      `]g` / `[g` are alternative non-colliding keys
+      each jump echoes current position as `X/Y`
+
+:GitDxDiffClose                                         *:GitDxDiffClose*
+    Close active GitDx diff in current tab.
+
+    If diff was opened in an owned tab (`diffview.open_in_tab=true`), closes that
+    tab. Otherwise runs `diffoff!` and cleans up GitDx temporary buffers.
+
+:GitDxDiffNext                                           *:GitDxDiffNext*
+    Jump to next change in active GitDx diff view.
+    Wraps from last change to first.
+
+:GitDxDiffPrev                                           *:GitDxDiffPrev*
+    Jump to previous change in active GitDx diff view.
+    Wraps from first change to last.
+
+:GitDxDiffEdit                                           *:GitDxDiffEdit*
+    Close active GitDx diff and open source file in a new tab at the same line.
+
+:GitDxStats                                                 *:GitDxStats*
+    Show current stats as `GitDx +A ~M -D`.
+
+    In normal mode: stats come from live working-tree diff.
+    In active GitDx diff: stats come from visible diff buffers.
+
+:GitDxRanges                                               *:GitDxRanges*
+    Show changed hunk ranges.
+
+    Normal mode:
+      opens location list, supports Enter/mouse jump, `q` closes
+
+    Active GitDx diff:
+      prints plain text ranges (no extra windows)
+
+:GitDxConflictRanges                               *:GitDxConflictRanges*
+    Show unresolved conflict marker ranges.
+
+    Conflict parser scans for markers:
+      `<<<<<<<`, `=======`, `>>>>>>>`
+
+    Normal mode:
+      opens location list, supports Enter/mouse jump, `q` closes
+
+    Active GitDx diff:
+      prints plain text ranges (no extra windows)
+
+:GitDxRefresh                                             *:GitDxRefresh*
+    Force live refresh for current buffer. Also refreshes panel if open.
+
+:GitDxToggle                                               *:GitDxToggle*
+:GitDxEnable                                               *:GitDxEnable*
+:GitDxDisable                                             *:GitDxDisable*
+    Toggle/enable/disable live diff engine.
+
+:GitDxSignsToggle                                     *:GitDxSignsToggle*
+:GitDxSignsEnable                                     *:GitDxSignsEnable*
+:GitDxSignsDisable                                   *:GitDxSignsDisable*
+    Toggle/enable/disable signcolumn markers only.
+
+:GitDxWinbarToggle                                   *:GitDxWinbarToggle*
+:GitDxWinbarEnable                                   *:GitDxWinbarEnable*
+:GitDxWinbarDisable                                 *:GitDxWinbarDisable*
+    Toggle/enable/disable winbar summary label.
+
+Panel interactions (inside panel buffer):
+
+- `q`: close panel
+- `r`: refresh panel
+- `<CR>` / mouse click: open selected entry
+
+Panel entry open behavior:
+
+- `A`, `M`: open working-tree diff for file
+- `D`: open deleted-file diff (empty working tree side)
+- `R`: open rename-aware diff (old path on base side)
+- `U`: open conflict file in new tab and jump to first conflict block
+
+===============================================================================
+CONFIGURATION                                               *gitdx-config*
+
+Setup >
+  require("gitdx").setup({
+    ref = "HEAD",
+    sign_priority = 10,
+
+    signs = {
+      add = "|",
+      change = "~",
+      delete = "_",
+    },
+
+    live = {
+      enabled = true,
+      debounce_ms = 120,
+      max_file_lines = 20000,
+      show_signs = true,
+      line_highlight = false,
+      show_deleted_count = true,
+      stable_signcolumn = true,
+      stable_signcolumn_value = "yes:1",
+      winbar_summary = true,
+      update_events = {
+        "TextChanged",
+        "TextChangedI",
+        "InsertLeave",
+        "BufWritePost",
+      },
+    },
+
+    panel = {
+      width = 40,
+      split = "left",  -- "left" | "right"
+    },
+
+    diffview = {
+      open_in_tab = true,
+      keep_focus = "right", -- "left" | "right"
+      sync_scroll = true,
+      winhighlight = table.concat({
+        "DiffAdd:GitDxDiffAdd",
+        "DiffDelete:GitDxDiffDelete",
+        "DiffChange:GitDxDiffChange",
+        "DiffText:GitDxDiffText",
+      }, ","),
+    },
+
+    highlights = {
+      -- override specific highlight groups
+    },
+  })
+<
+
+Option reference:
+
+ref (string, default "HEAD")
+    Baseline ref for live working-tree diff.
+
+sign_priority (number, default 10)
+    Priority used by sign placement.
+
+signs.add / signs.change / signs.delete (string)
+    Marker text shown in signcolumn.
+
+live.enabled (boolean, default true)
+    Enable live tracking engine on startup.
+
+live.debounce_ms (number, default 120)
+    Debounce for diff refresh events.
+
+live.max_file_lines (number, default 20000)
+    Files above this line count are skipped by live tracking.
+
+live.show_signs (boolean, default true)
+    Show/hide signcolumn markers.
+
+live.line_highlight (boolean, default false)
+    Highlight full changed lines.
+
+live.show_deleted_count (boolean, default true)
+    Show deleted count virtual hint (`-N`) at delete anchor line.
+
+live.stable_signcolumn (boolean, default true)
+    Keep signcolumn stable while GitDx is active in a Git-tracked buffer.
+
+live.stable_signcolumn_value (string, default "yes:1")
+    Value assigned to `win.signcolumn` when stable signcolumn is active.
+
+live.winbar_summary (boolean, default true)
+    Show/hide winbar stats label.
+
+live.update_events (string[])
+    Buffer events that trigger live refresh.
+
+panel.width (number, default 40)
+    Panel width in split mode.
+
+panel.split ("left" | "right", default "left")
+    Split side for |:GitDx| panel.
+
+diffview.open_in_tab (boolean, default true)
+    Open diff in dedicated tab. If false, uses current tab.
+
+diffview.keep_focus ("left" | "right", default "right")
+    Select focused pane after opening diff.
+
+diffview.sync_scroll (boolean, default true)
+    Synchronize vertical and horizontal scroll between diff panes.
+
+diffview.winhighlight (string)
+    Window-local diff highlight remap.
+
+highlights (table)
+    Overrides for plugin highlight groups. See |gitdx-highlights|.
+
+Runtime notes:
+
+- toggle commands mutate config state in memory (not persisted automatically)
+- highlights are re-applied on `ColorScheme`
+
+===============================================================================
+HIGHLIGHT GROUPS                                         *gitdx-highlights*
+
+Signs:
+
+- `GitDxSignAdd`
+- `GitDxSignChange`
+- `GitDxSignDelete`
+
+Live overlays:
+
+- `GitDxLineAdd`
+- `GitDxLineChange`
+- `GitDxDeletedVirtual`
+- `GitDxDirtyBadge`
+
+Panel:
+
+- `GitDxPanelTitle`
+- `GitDxPanelHint`
+- `GitDxPanelPath`
+- `GitDxPanelStatusAdd`
+- `GitDxPanelStatusChange`
+- `GitDxPanelStatusDelete`
+- `GitDxPanelStatusRename`
+- `GitDxPanelStatusConflict`
+
+Diff:
+
+- `GitDxDiffAdd`
+- `GitDxDiffDelete`
+- `GitDxDiffChange`
+- `GitDxDiffText`
+
+===============================================================================
+LUA API                                                         *gitdx-api*
+
+Public entrypoint: `require("gitdx")`
+
+setup(opts)
+    Apply config, register commands/highlights, and (re)configure live engine.
+
+refresh()
+    Refresh live state for current buffer.
+
+open_diff(ref)
+    Open working-tree diff for current buffer against `ref` (or default ref).
+
+close_diff()
+    Close active diff in current tab.
+
+close_diff_and_edit()
+    Close active diff and open source file in a new tab.
+
+diff_next_change()
+    Jump to next change hunk in active GitDx diff view (wraps).
+
+diff_prev_change()
+    Jump to previous change hunk in active GitDx diff view (wraps).
+
+toggle()
+    Toggle live engine. Returns boolean enabled state.
+
+toggle_signs()
+    Toggle sign visibility. Returns boolean visibility state.
+
+toggle_winbar()
+    Toggle winbar summary. Returns boolean enabled state.
+
+open_panel(path)
+    Open/focus working-tree panel.
+    Optional `path` scopes panel to explicit repo/workspace root.
+
+open_panel_right(path)
+    Open/focus working-tree panel on right split.
+    Optional `path` scopes panel to explicit repo/workspace root.
+
+open_panel_refs(from_ref, to_ref, open_in_current_window, path)
+    Open refs panel (split or current window).
+    Optional `path` selects repository root used for ref comparison.
+
+get_session_state()
+    Return GitDx panel workflow snapshot for integrations.
+
+apply_session_state(snapshot)
+    Restore GitDx panel workflow snapshot.
+
+is_setup()
+    Returns true if setup was completed.
+
+===============================================================================
+NOTES AND CONSTRAINTS                                         *gitdx-notes*
+
+- Live decorations are applied only to regular file buffers.
+- Buffers outside Git repositories are skipped cleanly.
+- Files ignored by `.gitignore` are skipped by live decorations.
+- Git calls are synchronous (`vim.system(...):wait()` or `system()` fallback).
+- Ref compare requires both paths inside the same repo and valid commit refs.
+- During active GitDx diff, panel opening is blocked to avoid layout conflicts.
+- Active GitDx diff provides hunk navigation via `n`/`N` and `]g`/`[g` (wraps).
+- `:Ex`/`:Explore` are blocked in panel/diff context and netrw windows are
+  closed if opened into an active diff tab.
+- GitDx panel state is tab-local: each tab can keep its own panel
+  independently.
+- Diff mode may append `hiddenoff` to `diffopt`; it is removed when no active
+  GitDx diff remains.
+
+vim:tw=78:ts=8:noet:ft=help:norl:

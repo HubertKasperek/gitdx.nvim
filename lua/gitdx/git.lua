@@ -32,6 +32,22 @@ local function abs_path(path)
   return vim.fn.fnamemodify(path, ":p")
 end
 
+local function normalize_abs_path(path)
+  local absolute = abs_path(path)
+  if #absolute > 1 and absolute:match("[/\\]$") then
+    absolute = absolute:sub(1, -2)
+  end
+  return absolute
+end
+
+local function dirname(path)
+  if vim.fs and vim.fs.dirname then
+    return vim.fs.dirname(path)
+  end
+
+  return vim.fn.fnamemodify(path, ":h")
+end
+
 local function is_directory(path)
   local uv = vim.uv or vim.loop
   local stat = uv.fs_stat(path)
@@ -59,10 +75,10 @@ local function relpath(root, path)
 end
 
 function M.find_repo_root_from(path)
-  local start_path = abs_path(path or vim.fn.getcwd())
+  local start_path = normalize_abs_path(path or vim.fn.getcwd())
   local dir = start_path
   if not is_directory(start_path) then
-    dir = vim.fs.dirname(start_path)
+    dir = dirname(start_path)
   end
 
   local code, stdout = run_command({ "git", "-C", dir, "rev-parse", "--show-toplevel" })
@@ -75,7 +91,7 @@ function M.find_repo_root_from(path)
     return nil
   end
 
-  return root
+  return normalize_abs_path(root)
 end
 
 function M.find_repo_root(path)
@@ -227,12 +243,7 @@ local function sort_entries(entries)
   end)
 end
 
-function M.list_changes(start_path)
-  local repo_root = M.find_repo_root_from(start_path or vim.fn.getcwd())
-  if not repo_root then
-    return nil, "Current directory is outside a Git repository"
-  end
-
+local function list_worktree_entries(repo_root)
   local code, stdout, stderr = run_git(repo_root, {
     "--no-pager",
     "status",
@@ -271,6 +282,7 @@ function M.list_changes(start_path)
           path = path,
           old_path = old_path,
           abs_path = abs_path(repo_root .. "/" .. path),
+          repo_root = repo_root,
           conflict = status == "U",
           staged = index_status ~= " " and index_status ~= "?",
           unstaged = worktree_status ~= " " and worktree_status ~= "?",
@@ -281,9 +293,120 @@ function M.list_changes(start_path)
 
   sort_entries(entries)
 
+  return entries
+end
+
+local function scan_root_from(start_path)
+  local absolute = normalize_abs_path(start_path or vim.fn.getcwd())
+  if is_directory(absolute) then
+    return absolute
+  end
+
+  local parent = dirname(absolute)
+  if not parent or parent == "" then
+    return absolute
+  end
+
+  return normalize_abs_path(parent)
+end
+
+local function find_descendant_repo_roots(scan_root)
+  local results = {}
+  local seen = {}
+
+  local function add_repo_root(root)
+    if not root or root == "" then
+      return
+    end
+
+    local normalized = normalize_abs_path(root)
+    if normalized == "" or seen[normalized] then
+      return
+    end
+
+    seen[normalized] = true
+    table.insert(results, normalized)
+  end
+
+  if not vim.fs or type(vim.fs.find) ~= "function" then
+    return results
+  end
+
+  -- Keep discovery bounded to avoid long UI stalls in very large trees.
+  local find_limit = 100000
+  for _, marker_type in ipairs({ "directory", "file" }) do
+    local markers = vim.fs.find(".git", {
+      path = scan_root,
+      type = marker_type,
+      limit = find_limit,
+    })
+
+    for _, marker in ipairs(markers) do
+      local repo_dir = dirname(marker)
+      local repo_root = M.find_repo_root_from(repo_dir)
+      if repo_root then
+        add_repo_root(repo_root)
+      end
+    end
+  end
+
+  table.sort(results)
+  return results
+end
+
+function M.list_changes(start_path)
+  local root_probe_path = start_path or vim.fn.getcwd()
+  local repo_root = M.find_repo_root_from(root_probe_path)
+
+  if repo_root then
+    local entries, err = list_worktree_entries(repo_root)
+    if not entries then
+      return nil, err
+    end
+
+    return {
+      repo_root = repo_root,
+      entries = entries,
+      repo_count = 1,
+    }
+  end
+
+  local workspace_root = scan_root_from(root_probe_path)
+  local repo_roots = find_descendant_repo_roots(workspace_root)
+  if #repo_roots == 0 then
+    return nil, "Current directory is outside a Git repository"
+  end
+
+  local repositories = {}
+  local merged_entries = {}
+
+  for _, child_root in ipairs(repo_roots) do
+    local entries, err = list_worktree_entries(child_root)
+    if not entries then
+      return nil, err
+    end
+
+    if #entries > 0 then
+      local repo_relpath = relpath(workspace_root, child_root)
+      table.insert(repositories, {
+        repo_root = child_root,
+        relpath = repo_relpath,
+        entries = entries,
+      })
+      vim.list_extend(merged_entries, entries)
+    end
+  end
+
+  table.sort(repositories, function(a, b)
+    return (a.relpath or a.repo_root or "") < (b.relpath or b.repo_root or "")
+  end)
+
   return {
-    repo_root = repo_root,
-    entries = entries,
+    repo_root = workspace_root,
+    entries = merged_entries,
+    repos = repositories,
+    repo_count = #repo_roots,
+    workspace_mode = true,
   }
 end
 
@@ -344,6 +467,7 @@ function M.list_ref_changes(start_path, from_ref, to_ref)
             path = new_path,
             old_path = old_path ~= "" and old_path or nil,
             abs_path = abs_path(repo_root .. "/" .. new_path),
+            repo_root = repo_root,
           })
         end
       else
@@ -360,6 +484,7 @@ function M.list_ref_changes(start_path, from_ref, to_ref)
             status = status,
             path = path,
             abs_path = abs_path(repo_root .. "/" .. path),
+            repo_root = repo_root,
           })
         end
       end
